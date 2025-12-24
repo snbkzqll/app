@@ -51,10 +51,10 @@ local_css()
 # ==================== ⚙️ 云端连接配置 ====================
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 定义工作表名称 (必须与 Google Sheets 底部标签页名字一致)
+# 定义工作表名称
 SHEET_ELEC = "electronics"
 SHEET_SCREW = "screws"
-SHEET_PCB = "pcbs"  # 🟢 新增：PCB 表名
+SHEET_PCB = "pcbs"
 
 
 # ==================== 🔧 核心函数 ====================
@@ -173,7 +173,7 @@ def render_electronics():
         st.info("💡 提示：云端版建议直接在 [总览] 页面搜索型号，然后手动修改库存数量。")
 
 
-# ==================== 🔩 五金螺丝 ====================
+# ==================== 🔩 五金螺丝 (含出库) ====================
 def render_screws():
     st.markdown("## 🔩 五金螺丝 (Google Sheets)")
     df = load_data(SHEET_SCREW)
@@ -188,32 +188,74 @@ def render_screws():
 
     st.markdown("---")
     col1, col2 = st.columns([1, 4])
+
     with col1:
-        st.write("### ⚡ 快速入库")
-        with st.form("screw_add"):
-            spec = st.text_input("规格", placeholder="M3")
-            length = st.text_input("长度", placeholder="10mm")
-            stype = st.text_input("类型", placeholder="圆头")
-            qty = st.number_input("数量", value=50, step=10)
-            if st.form_submit_button("➕ 添加 / 补货"):
-                mask = (df['规格'] == spec) & (df['长度'] == length) & (df['类型'] == stype)
-                if mask.any():
-                    df.loc[mask, '数量'] += qty
-                    st.toast(f"库存已累加: {spec} {length} +{qty}")
-                else:
-                    new_row = pd.DataFrame(
-                        [{"规格": spec, "长度": length, "类型": stype, "材质": "不锈钢", "数量": qty, "备注": ""}])
-                    df = pd.concat([df, new_row], ignore_index=True)
-                    st.toast(f"新规格入库: {spec} {length}")
-                save_data(df, SHEET_SCREW)
-                time.sleep(1)
-                st.rerun()
+        # 🟢 改动：分成 入库 和 出库 两个Tab
+        tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
+
+        # === 入库逻辑 ===
+        with tab_in:
+            with st.form("screw_add"):
+                spec = st.text_input("规格", placeholder="M3")
+                length = st.text_input("长度", placeholder="10mm")
+                stype = st.text_input("类型", placeholder="圆头")
+                qty = st.number_input("数量", value=50, step=10, min_value=1)
+
+                if st.form_submit_button("➕ 确认入库"):
+                    mask = (df['规格'] == spec) & (df['长度'] == length) & (df['类型'] == stype)
+                    if mask.any():
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"库存已增加: {spec} +{qty}")
+                    else:
+                        new_row = pd.DataFrame(
+                            [{"规格": spec, "长度": length, "类型": stype, "材质": "不锈钢", "数量": qty, "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新规格入库: {spec}")
+                    save_data(df, SHEET_SCREW)
+                    time.sleep(1)
+                    st.rerun()
+
+        # === 出库逻辑 (新增) ===
+        with tab_out:
+            st.caption("选择库存进行领用：")
+            # 拼接一个显示用的名称列表，防止手输入错
+            if not df.empty:
+                # 创建一个辅助列用于下拉菜单
+                df['display_name'] = df['规格'] + " " + df['长度'] + " " + df['类型'] + " (余:" + df['数量'].astype(
+                    str) + ")"
+
+                with st.form("screw_out"):
+                    selected_item = st.selectbox("选择螺丝", df['display_name'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, step=1, min_value=1)
+
+                    if st.form_submit_button("➖ 确认出库"):
+                        # 找到对应的行索引
+                        idx = df[df['display_name'] == selected_item].index[0]
+                        current_qty = df.at[idx, '数量']
+
+                        if current_qty < out_qty:
+                            st.error(f"库存不足！当前只有 {current_qty} 个")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            # 清理辅助列后保存
+                            save_df = df.drop(columns=['display_name'])
+                            save_data(save_df, SHEET_SCREW)
+                            st.success(f"出库成功！剩余 {current_qty - out_qty}")
+                            time.sleep(1)
+                            st.rerun()
+            else:
+                st.warning("暂无库存可出")
+
         st.divider()
         if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
 
     with col2:
         edited_df = st.data_editor(
-            df, use_container_width=True, num_rows="dynamic", height=500, key="screw_editor"
+            df if 'display_name' not in df.columns else df.drop(columns=['display_name']),
+            use_container_width=True,
+            num_rows="dynamic",
+            height=500,
+            key="screw_editor"
         )
         if st.button("💾 保存五金更改", type="primary"):
             if save_data(edited_df, SHEET_SCREW):
@@ -222,81 +264,90 @@ def render_screws():
                 st.rerun()
 
 
-# ==================== 📟 PCB 电路板 (新增) ====================
+# ==================== 📟 PCB 电路板 (含出库) ====================
 def render_pcb():
     st.markdown("## 📟 PCB 电路板 (Google Sheets)")
-    # 1. 加载数据
     df = load_data(SHEET_PCB)
 
-    # 初始化检查
     if df.empty:
         st.info("表格为空，请确保 Google Sheets 'pcbs' 表头包含：名称, 尺寸, 数量, 位置, 备注")
-        # 即使为空也允许手动添加，所以不直接 return，除非连列名都没有
-        if '名称' not in df.columns:
-            return
+        if '名称' not in df.columns: return
 
-    # 2. 仪表盘
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 板子型号", len(df))
     c2.metric("🔢 库存总数", df['数量'].sum())
-    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]), delta_color="inverse")  # PCB通常少于5片就该打样了
+    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]), delta_color="inverse")
 
     st.markdown("---")
-
     col1, col2 = st.columns([1, 4])
 
-    # 左侧：快速添加表单
     with col1:
-        st.write("### ⚡ 新板入库")
-        with st.form("pcb_add"):
-            name = st.text_input("名称/版本号", placeholder="V1.0 主控板")
-            size = st.text_input("尺寸", placeholder="10x10cm")
-            loc = st.text_input("位置", placeholder="A-01")
-            qty = st.number_input("数量", value=5, step=1, min_value=1)
+        # 🟢 改动：分成 入库 和 出库 两个Tab
+        tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
 
-            if st.form_submit_button("➕ 添加 / 补货"):
-                # 逻辑：名称和尺寸一致视为同一种板子
-                mask = (df['名称'] == name) & (df['尺寸'] == size)
+        # === 入库逻辑 ===
+        with tab_in:
+            with st.form("pcb_add"):
+                name = st.text_input("名称/版本号", placeholder="V1.0 主控板")
+                size = st.text_input("尺寸", placeholder="10x10cm")
+                loc = st.text_input("位置", placeholder="A-01")
+                qty = st.number_input("数量", value=5, step=1, min_value=1)
 
-                if mask.any():
-                    df.loc[mask, '数量'] += qty
-                    st.toast(f"已累加: {name} +{qty}")
-                else:
-                    new_row = pd.DataFrame([{
-                        "名称": name, "尺寸": size, "数量": qty,
-                        "位置": loc, "备注": ""
-                    }])
-                    df = pd.concat([df, new_row], ignore_index=True)
-                    st.toast(f"新板入库: {name}")
+                if st.form_submit_button("➕ 确认入库"):
+                    mask = (df['名称'] == name) & (df['尺寸'] == size)
+                    if mask.any():
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"已累加: {name} +{qty}")
+                    else:
+                        new_row = pd.DataFrame([{"名称": name, "尺寸": size, "数量": qty, "位置": loc, "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新板入库: {name}")
+                    save_data(df, SHEET_PCB)
+                    time.sleep(1)
+                    st.rerun()
 
-                # 自动保存
-                save_data(df, SHEET_PCB)
-                time.sleep(1)
-                st.rerun()
+        # === 出库逻辑 (新增) ===
+        with tab_out:
+            st.caption("选择 PCB 进行领用：")
+            if not df.empty:
+                # 辅助列显示详细信息
+                df['display_info'] = df['名称'] + " [" + df['尺寸'] + "] (余:" + df['数量'].astype(str) + ")"
+
+                with st.form("pcb_out"):
+                    selected_pcb = st.selectbox("选择板子", df['display_info'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, step=1, min_value=1)
+
+                    if st.form_submit_button("➖ 确认出库"):
+                        idx = df[df['display_info'] == selected_pcb].index[0]
+                        current_qty = df.at[idx, '数量']
+
+                        if current_qty < out_qty:
+                            st.error(f"库存不足！仅剩 {current_qty}")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            save_df = df.drop(columns=['display_info'])
+                            save_data(save_df, SHEET_PCB)
+                            st.success(f"领用成功！剩余 {current_qty - out_qty}")
+                            time.sleep(1)
+                            st.rerun()
+            else:
+                st.warning("暂无库存")
 
         st.divider()
-        if st.button("🔄 刷新数据", use_container_width=True):
-            st.rerun()
+        if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
 
-    # 右侧：全功能编辑器
     with col2:
         edited_df = st.data_editor(
-            df,
+            df if 'display_info' not in df.columns else df.drop(columns=['display_info']),
             use_container_width=True,
             num_rows="dynamic",
             height=500,
             key="pcb_editor",
             column_config={
-                "数量": st.column_config.NumberColumn(
-                    "数量",
-                    help="库存数量",
-                    min_value=0,
-                    step=1,
-                ),
+                "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
                 "尺寸": st.column_config.TextColumn("尺寸 (长x宽)"),
             }
         )
-
         if st.button("💾 保存PCB更改", type="primary"):
             if save_data(edited_df, SHEET_PCB):
                 st.success("✅ 保存成功！")
@@ -308,7 +359,6 @@ def render_pcb():
 with st.sidebar:
     st.title("☁️ 云端管家")
     st.markdown("---")
-    # 🟢 修改：增加了 PCB 电路板 选项
     app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝", "PCB电路板"], label_visibility="collapsed")
     st.markdown("---")
     st.caption(f"Status: Online 🟢\nDatabase: Google Sheets")
@@ -318,4 +368,4 @@ if app_mode == "电子元器件":
 elif app_mode == "五金螺丝":
     render_screws()
 else:
-    render_pcb()  # 🟢 新增：调用 PCB 渲染函数
+    render_pcb()
