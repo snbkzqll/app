@@ -4,7 +4,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 import time
 
-# ==================== 🎨 界面美化 ====================
+# ==================== 🎨 界面美化配置 ====================
 st.set_page_config(page_title="云端库存管家", page_icon="☁️", layout="wide")
 
 
@@ -16,25 +16,32 @@ def local_css():
         [data-testid="stSidebar"] * { color: #f1f5f9 !important; }
         h1, h2, h3 {
             background: -webkit-linear-gradient(45deg, #2563eb, #9333ea);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            font-family: 'Segoe UI', sans-serif; font-weight: 800 !important;
+            -webkit-background-clip: text; 
+            -webkit-text-fill-color: transparent;
+            font-family: 'Segoe UI', sans-serif; 
+            font-weight: 800 !important;
         }
         div[data-testid="metric-container"] {
-            background-color: rgba(255, 255, 255, 0.9); border-radius: 15px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 15px;
+            background-color: rgba(255, 255, 255, 0.9); 
+            border-radius: 15px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); 
+            padding: 15px;
+            border: 1px solid #e5e7eb;
         }
         [data-testid="stDataEditor"] {
-            background-color: white; border-radius: 15px; padding: 10px;
+            background-color: white; 
+            border-radius: 15px; 
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
-        .stButton>button { border-radius: 50px; font-weight: bold; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-
-        /* 图片预览区的样式 */
-        .img-preview {
-            border: 2px solid #e5e7eb;
-            border-radius: 10px;
-            padding: 5px;
-            background: white;
+        .stButton>button { 
+            border-radius: 50px; 
+            font-weight: bold; 
+            border: none; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+            transition: all 0.2s;
         }
+        .stButton>button:hover { transform: scale(1.02); }
     </style>
     """, unsafe_allow_html=True)
 
@@ -43,14 +50,17 @@ local_css()
 
 # ==================== ⚙️ 云端连接配置 ====================
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+# 定义工作表名称
 SHEET_ELEC = "electronics"
 SHEET_SCREW = "screws"
+SHEET_PCB = "pcbs"
 
 
 # ==================== 🔧 核心函数 ====================
 
 def load_data(sheet_name):
-    """从云端读取数据"""
+    """从云端读取数据 (不缓存)"""
     try:
         df = conn.read(worksheet=sheet_name, ttl=0)
         df = df.fillna("")
@@ -86,43 +96,12 @@ def get_sort_value(name):
     return float('inf')
 
 
-# ==================== 🖼️ 图片显示助手 ====================
-def show_selected_image(df, selection):
-    """在侧边栏显示选中行的图片"""
-    if selection and "rows" in selection and selection["rows"]:
-        # 获取选中行的索引
-        idx = selection["rows"][0]
-        # 获取该行数据
-        try:
-            # 注意：如果表格经过排序/筛选，这里的 index 需要小心处理
-            # 这里的 df 是 display_df，索引是对应的
-            row = df.iloc[idx]
-            name = row.get("名称", row.get("规格", "未知器件"))
-
-            st.sidebar.markdown("---")
-            st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
-
-            # 检查是否有图片列
-            img_col = None
-            for col in ["图片", "图片链接", "Image", "img"]:
-                if col in df.columns:
-                    img_col = col
-                    break
-
-            if img_col and row[img_col] and str(row[img_col]).startswith("http"):
-                st.sidebar.image(row[img_col], caption=f"{name} 实物图", use_container_width=True)
-            else:
-                st.sidebar.info("暂无图片链接 (请在表格 '图片' 列填入网址)")
-        except Exception as e:
-            st.sidebar.error(f"图片加载失败: {e}")
-
-
-# ==================== 📱 电子元器件 (云端版) ====================
+# ==================== 📱 电子元器件 ====================
 def render_electronics():
     st.markdown("## ☁️ 电子元器件 (Google Sheets)")
     df = load_data(SHEET_ELEC)
     if df.empty:
-        st.info("正在初始化数据表...")
+        st.info("初始化中或表格为空...")
         return
 
     c1, c2, c3 = st.columns(3)
@@ -131,21 +110,23 @@ def render_electronics():
     low_stock = df[df['数量'] < 10]
     c3.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
 
-    st.markdown("---")
+    if not low_stock.empty:
+        with st.expander(f"🔴 查看 {len(low_stock)} 个缺货器件"):
+            st.dataframe(low_stock, use_container_width=True)
 
+    st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 批量入库", "📤 BOM出库"])
 
     with tab1:
         col1, col2 = st.columns([1, 4])
         with col1:
             st.markdown("##### 🛠 操作")
-            if st.button("🔄 强制刷新", use_container_width=True):
-                st.rerun()
+            if st.button("🔄 强制刷新", use_container_width=True): st.rerun()
             st.divider()
             st.markdown("##### 🔍 筛选")
             sort_mode = st.selectbox("排序", ["智能排序", "库存倒序", "库存正序"])
             filter_type = st.multiselect("类型", df['类型'].unique() if '类型' in df.columns else [])
-            search = st.text_input("搜索...")
+            search = st.text_input("搜索...", placeholder="输入型号或参数")
 
         with col2:
             display_df = df.copy()
@@ -163,67 +144,36 @@ def render_electronics():
             elif sort_mode == "库存正序":
                 display_df = display_df.sort_values(by='数量')
 
-            # 🔥🔥🔥 核心修改：增加行选择功能 🔥🔥🔥
-            # 1. 配置列显示 (把图片链接直接显示为缩略图)
-            column_cfg = {}
-            if "图片" in display_df.columns:
-                column_cfg["图片"] = st.column_config.ImageColumn("图片预览", help="输入图片链接")
-
-            # 2. 启用 selection_mode
-            event = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                height=500,
-                key="elec_editor",
-                column_config=column_cfg,
-                on_change=None,
-                selection_mode="single-row",  # 允许单选行
+            edited_df = st.data_editor(
+                display_df, use_container_width=True, num_rows="dynamic", height=500, key="elec_editor"
             )
 
-            # 3. 如果选中了行，在侧边栏显示大图
-            show_selected_image(display_df, event.selection)
-
-            # 4. 获取编辑后的数据 (data_editor 返回的是事件对象，我们需要手动提取 data)
-            # 注意：Streamlit 的 data_editor 直接修改传入的 df 并不完全准确，
-            # 但在这里为了保持你原有的保存逻辑简单，我们假设用户是想保存 event 中的更改。
-            # 实际上 data_editor 会返回编辑后的 dataframe，但在开启 selection 后，返回值变成了 event。
-            # ⚠️ 修正：Streamlit 1.35+ data_editor 开启 selection 后返回的是 dataframe 还是 event 取决于写法。
-            # 为了兼容保存功能和选择功能，我们需要用 state 或者重新组织逻辑。
-            # 简化方案：data_editor 在 Streamlit 新版中直接返回编辑后的数据，selection 存储在 event.selection 中
-            # 但目前 API 如果开启 on_select，返回值会变。
-            # 💡 最佳实践：这里我们为了不破坏你的保存逻辑，仅仅利用 selection 来展示图片。
-            # data_editor 默认返回 edited_df。selection 需要通过 key 在 session_state 中获取，或者使用 on_select。
-
-            # 修正逻辑：使用 session_state 获取选区，data_editor 依然返回 edited_df
-            if "elec_editor" in st.session_state:
-                selection = st.session_state["elec_editor"].get("selection", {})
-                show_selected_image(display_df, selection)
-
-            if st.button("💾 保存更改到云端", type="primary"):
-                # 这里的 event 其实就是 edited_df
-                if save_data(event, SHEET_ELEC):
-                    st.success("✅ 云端保存成功！")
-                    time.sleep(1)
-                    st.rerun()
+            if len(edited_df) != len(df):
+                st.warning("⚠️ 筛选或搜索模式下 **禁止保存**。请清空筛选条件，显示全表后再保存。")
+            else:
+                if st.button("💾 保存更改到云端", type="primary", use_container_width=True):
+                    if save_data(edited_df, SHEET_ELEC):
+                        st.success("✅ 云端保存成功！")
+                        time.sleep(1)
+                        st.rerun()
 
     with tab2:
+        st.write("批量上传 Excel 追加库存")
         up_file = st.file_uploader("上传 Excel 入库单", type=['xlsx'])
         if up_file:
             new_data = pd.read_excel(up_file)
             st.write("预览:", new_data.head())
-            if st.button("🚀 确认合并入库"):
-                current_df = load_data(SHEET_ELEC)
-                updated_df = pd.concat([current_df, new_data], ignore_index=True)
+            if st.button("🚀 确认追加到云端"):
+                updated_df = pd.concat([df, new_data], ignore_index=True)
                 if save_data(updated_df, SHEET_ELEC):
                     st.success("入库成功！")
                     time.sleep(1)
                     st.rerun()
     with tab3:
-        st.info("BOM 匹配功能建议在本地使用。")
+        st.info("💡 提示：云端版建议直接在 [总览] 页面搜索型号，然后手动修改库存数量。")
 
 
-# ==================== 🔩 五金螺丝 (云端版) ====================
+# ==================== 🔩 五金螺丝 (修复版) ====================
 def render_screws():
     st.markdown("## 🔩 五金螺丝 (Google Sheets)")
     df = load_data(SHEET_SCREW)
@@ -240,62 +190,184 @@ def render_screws():
     col1, col2 = st.columns([1, 4])
 
     with col1:
-        st.write("### ⚡ 快速入库")
-        with st.form("screw_add"):
-            spec = st.text_input("规格", placeholder="M3")
-            length = st.text_input("长度", placeholder="10mm")
-            stype = st.text_input("类型", placeholder="圆头")
-            qty = st.number_input("数量", value=50)
-            if st.form_submit_button("➕ 添加"):
-                mask = (df['规格'] == spec) & (df['长度'] == length) & (df['类型'] == stype)
-                if mask.any():
-                    df.loc[mask, '数量'] += qty
-                else:
-                    new_row = pd.DataFrame(
-                        [{"规格": spec, "长度": length, "类型": stype, "材质": "不锈钢", "数量": qty, "备注": ""}])
-                    df = pd.concat([df, new_row], ignore_index=True)
-                save_data(df, SHEET_SCREW)
-                st.toast("添加成功!")
-                time.sleep(1)
-                st.rerun()
+        tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
+
+        # === 入库逻辑 ===
+        with tab_in:
+            with st.form("screw_add"):
+                # 强制转为字符串处理
+                spec = st.text_input("规格", placeholder="M3")
+                length = st.text_input("长度", placeholder="10mm")
+                stype = st.text_input("类型", placeholder="圆头")
+                qty = st.number_input("数量", value=50, step=10, min_value=1)
+
+                if st.form_submit_button("➕ 确认入库"):
+                    # 比较时也强制转为字符串
+                    mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
+                                df['类型'].astype(str) == str(stype))
+                    if mask.any():
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"库存已增加: {spec} +{qty}")
+                    else:
+                        new_row = pd.DataFrame([{"规格": str(spec), "长度": str(length), "类型": str(stype),
+                                                 "材质": "不锈钢", "数量": qty, "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新规格入库: {spec}")
+                    save_data(df, SHEET_SCREW)
+                    time.sleep(1)
+                    st.rerun()
+
+        # === 出库逻辑 (核心修复) ===
+        with tab_out:
+            st.caption("选择库存进行领用：")
+            if not df.empty:
+                # 👇👇👇 核心修复：这里也加了 .astype(str) 👇👇👇
+                df['display_name'] = df['规格'].astype(str) + " " + df['长度'].astype(str) + " " + df['类型'].astype(
+                    str) + " (余:" + df['数量'].astype(str) + ")"
+
+                with st.form("screw_out"):
+                    selected_item = st.selectbox("选择螺丝", df['display_name'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, step=1, min_value=1)
+
+                    if st.form_submit_button("➖ 确认出库"):
+                        idx = df[df['display_name'] == selected_item].index[0]
+                        current_qty = df.at[idx, '数量']
+
+                        if current_qty < out_qty:
+                            st.error(f"库存不足！当前只有 {current_qty} 个")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            save_df = df.drop(columns=['display_name'])
+                            save_data(save_df, SHEET_SCREW)
+                            st.success(f"出库成功！剩余 {current_qty - out_qty}")
+                            time.sleep(1)
+                            st.rerun()
+            else:
+                st.warning("暂无库存可出")
+
         st.divider()
-        if st.button("🔄 刷新"): st.rerun()
+        if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
 
     with col2:
-        # 同样增加图片显示逻辑
-        column_cfg = {}
-        if "图片" in df.columns:
-            column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
-
+        # 显示时不带辅助列
+        display_data = df.drop(columns=['display_name']) if 'display_name' in df.columns else df
         edited_df = st.data_editor(
-            df,
+            display_data,
             use_container_width=True,
             num_rows="dynamic",
             height=500,
-            key="screw_editor",
-            column_config=column_cfg,
-            selection_mode="single-row"
+            key="screw_editor"
         )
-
-        # 显示图片
-        if "screw_editor" in st.session_state:
-            selection = st.session_state["screw_editor"].get("selection", {})
-            show_selected_image(df, selection)
-
         if st.button("💾 保存五金更改", type="primary"):
-            save_data(edited_df, SHEET_SCREW)
-            st.success("保存成功！")
-            st.rerun()
+            if save_data(edited_df, SHEET_SCREW):
+                st.success("✅ 保存成功！")
+                time.sleep(1)
+                st.rerun()
+
+
+# ==================== 📟 PCB 电路板 (修复版) ====================
+def render_pcb():
+    st.markdown("## 📟 PCB 电路板 (Google Sheets)")
+    df = load_data(SHEET_PCB)
+
+    if df.empty:
+        st.info("表格为空，请确保 Google Sheets 'pcbs' 表头包含：名称, 尺寸, 数量, 位置, 备注")
+        if '名称' not in df.columns: return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📦 板子型号", len(df))
+    c2.metric("🔢 库存总数", df['数量'].sum())
+    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]), delta_color="inverse")
+
+    st.markdown("---")
+    col1, col2 = st.columns([1, 4])
+
+    with col1:
+        tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
+
+        with tab_in:
+            with st.form("pcb_add"):
+                name = st.text_input("名称/版本号", placeholder="V1.0 主控板")
+                size = st.text_input("尺寸", placeholder="10x10cm")
+                loc = st.text_input("位置", placeholder="A-01")
+                qty = st.number_input("数量", value=5, step=1, min_value=1)
+
+                if st.form_submit_button("➕ 确认入库"):
+                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size))
+                    if mask.any():
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"已累加: {name} +{qty}")
+                    else:
+                        new_row = pd.DataFrame(
+                            [{"名称": str(name), "尺寸": str(size), "数量": qty, "位置": str(loc), "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新板入库: {name}")
+                    save_data(df, SHEET_PCB)
+                    time.sleep(1)
+                    st.rerun()
+
+        with tab_out:
+            st.caption("选择 PCB 进行领用：")
+            if not df.empty:
+                # 👇👇👇 核心修复：加了 .astype(str) 👇👇👇
+                df['display_info'] = df['名称'].astype(str) + " [" + df['尺寸'].astype(str) + "] (余:" + df[
+                    '数量'].astype(str) + ")"
+
+                with st.form("pcb_out"):
+                    selected_pcb = st.selectbox("选择板子", df['display_info'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, step=1, min_value=1)
+
+                    if st.form_submit_button("➖ 确认出库"):
+                        idx = df[df['display_info'] == selected_pcb].index[0]
+                        current_qty = df.at[idx, '数量']
+
+                        if current_qty < out_qty:
+                            st.error(f"库存不足！仅剩 {current_qty}")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            save_df = df.drop(columns=['display_info'])
+                            save_data(save_df, SHEET_PCB)
+                            st.success(f"领用成功！剩余 {current_qty - out_qty}")
+                            time.sleep(1)
+                            st.rerun()
+            else:
+                st.warning("暂无库存")
+
+        st.divider()
+        if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
+
+    with col2:
+        display_data = df.drop(columns=['display_info']) if 'display_info' in df.columns else df
+        edited_df = st.data_editor(
+            display_data,
+            use_container_width=True,
+            num_rows="dynamic",
+            height=500,
+            key="pcb_editor",
+            column_config={
+                "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
+                "尺寸": st.column_config.TextColumn("尺寸 (长x宽)"),
+                "名称": st.column_config.TextColumn("名称", required=True),
+            }
+        )
+        if st.button("💾 保存PCB更改", type="primary"):
+            if save_data(edited_df, SHEET_PCB):
+                st.success("✅ 保存成功！")
+                time.sleep(1)
+                st.rerun()
 
 
 # ==================== 🚀 主入口 ====================
 with st.sidebar:
     st.title("☁️ 云端管家")
-    st.info("💡 提示：点击表格左侧的方框选中一行，即可在侧边栏下方查看图片。")
-    app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝"])
-    st.caption("Data stored in Google Sheets")
+    st.markdown("---")
+    app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝", "PCB电路板"], label_visibility="collapsed")
+    st.markdown("---")
+    st.caption(f"Status: Online 🟢\nDatabase: Google Sheets")
 
 if app_mode == "电子元器件":
     render_electronics()
-else:
+elif app_mode == "五金螺丝":
     render_screws()
+else:
+    render_pcb()
