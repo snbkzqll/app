@@ -4,8 +4,14 @@ from streamlit_gsheets import GSheetsConnection
 import re
 import time
 
-
-
+# ==================== 🔐 账号密码配置 ====================
+# 格式： "用户名": "密码"
+# 你可以在这里添加更多账号
+USERS = {
+    "admin": "123456",
+    "user1": "888888",
+    "root": "root"
+}
 
 # ==================== 🎨 界面美化配置 ====================
 st.set_page_config(page_title="云端库存管家", page_icon="☁️", layout="wide")
@@ -45,11 +51,60 @@ def local_css():
             transition: all 0.2s;
         }
         .stButton>button:hover { transform: scale(1.02); }
+
+        /* 登录框样式优化 */
+        .login-box {
+            padding: 2rem;
+            border-radius: 10px;
+            background-color: white;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            margin-top: 10vh;
+        }
     </style>
     """, unsafe_allow_html=True)
 
 
 local_css()
+
+
+# ==================== 🔐 登录逻辑 ====================
+
+def check_login():
+    """检查登录状态，未登录则显示登录界面"""
+    # 初始化 session_state
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+
+    if not st.session_state.logged_in:
+        # 使用空容器居中显示
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col2:
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.title("🔐 请先登录")
+
+            with st.form("login_form"):
+                username = st.text_input("账号", placeholder="请输入用户名")
+                password = st.text_input("密码", type="password", placeholder="请输入密码")
+                submit = st.form_submit_button("登录", use_container_width=True)
+
+                if submit:
+                    if username in USERS and USERS[username] == password:
+                        st.session_state.logged_in = True
+                        st.session_state.username = username
+                        st.success("登录成功！")
+                        st.rerun()
+                    else:
+                        st.error("❌ 账号或密码错误")
+        return False
+    return True
+
+
+# 🔴 核心拦截：如果未登录，直接停止运行后续代码
+if not check_login():
+    st.stop()
+
+# ==================== 👇 登录成功后才会执行以下代码 👇 ====================
 
 # ==================== ⚙️ 云端连接配置 ====================
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -207,7 +262,7 @@ def render_screws():
                 if st.form_submit_button("➕ 确认入库"):
                     # 比较时也强制转为字符串
                     mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
-                                df['类型'].astype(str) == str(stype))
+                            df['类型'].astype(str) == str(stype))
                     if mask.any():
                         df.loc[mask, '数量'] += qty
                         st.toast(f"库存已增加: {spec} +{qty}")
@@ -363,6 +418,14 @@ def render_pcb():
 # ==================== 🚀 主入口 ====================
 with st.sidebar:
     st.title("☁️ 云端管家")
+
+    # 显示当前用户
+    if 'username' in st.session_state:
+        st.write(f"👤 当前用户: **{st.session_state.username}**")
+        if st.button("🚪 退出登录"):
+            st.session_state.logged_in = False
+            st.rerun()
+
     st.markdown("---")
     app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝", "PCB电路板"], label_visibility="collapsed")
     st.markdown("---")
