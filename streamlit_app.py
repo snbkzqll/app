@@ -5,10 +5,9 @@ import re
 import time
 
 # ==================== 🔐 安全登录配置 ====================
-# 👇 在这里修改你的账号和密码
 USERS = {
-    "admin": "123456",  # 账号: admin, 密码: 123456
-    "li": "888888",  # 账号: li,    密码: 888888
+    "admin": "123456",
+    "li": "888888",
 }
 
 # ==================== 🎨 界面美化 ====================
@@ -34,7 +33,6 @@ def local_css():
             background-color: white; border-radius: 15px; padding: 10px;
         }
         .stButton>button { border-radius: 50px; font-weight: bold; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        /* 登录框样式 */
         .login-box {
             max-width: 400px; margin: 100px auto; padding: 30px;
             background: white; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1);
@@ -46,14 +44,12 @@ def local_css():
 local_css()
 
 
-# ==================== 🕵️‍♂️ 登录逻辑函数 ====================
+# ==================== 🕵️‍♂️ 登录逻辑 ====================
 def check_login():
-    """检查登录状态"""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        # 显示登录界面
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
             st.markdown("<br><br><br>", unsafe_allow_html=True)
@@ -61,11 +57,10 @@ def check_login():
             with st.form("login_form"):
                 username = st.text_input("账号")
                 password = st.text_input("密码", type="password")
-                submit = st.form_submit_button("登录", use_container_width=True)
-
-                if submit:
+                if st.form_submit_button("登录", use_container_width=True):
                     if username in USERS and USERS[username] == password:
                         st.session_state.authenticated = True
+                        st.session_state.username = username
                         st.success("登录成功！")
                         st.rerun()
                     else:
@@ -74,11 +69,8 @@ def check_login():
     return True
 
 
-# 🛑 如果未登录，直接停止运行后面的代码
 if not check_login():
     st.stop()
-
-# ==================== 👇 登录成功后才会执行以下代码 👇 ====================
 
 # ==================== ⚙️ 云端连接配置 ====================
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -87,15 +79,27 @@ SHEET_SCREW = "screws"
 SHEET_PCB = "pcbs"
 
 
-# ==================== 🔧 核心函数 ====================
+# ==================== 🔧 核心函数 (修复版) ====================
 
 def load_data(sheet_name):
-    """从云端读取数据"""
+    """从云端读取数据，并强制修正数据类型"""
     try:
         df = conn.read(worksheet=sheet_name, ttl=0)
         df = df.fillna("")
+
+        # 1. 强制列名为字符串（防止数字表头报错）
+        df.columns = df.columns.astype(str)
+
+        # 2. 处理“数量”列：强制转为整数
         if '数量' in df.columns:
             df['数量'] = pd.to_numeric(df['数量'], errors='coerce').fillna(0).astype(int)
+
+        # 3. 处理其他列：强制转为字符串（防止混合类型导致 data_editor 崩溃）
+        # 这一点至关重要！解决 TypeError 的关键！
+        for col in df.columns:
+            if col != '数量':
+                df[col] = df[col].astype(str).replace('nan', '')
+
         return df
     except Exception as e:
         st.error(f"连接云端失败: {e}")
@@ -128,13 +132,11 @@ def get_sort_value(name):
 
 # ==================== 🖼️ 图片显示助手 ====================
 def show_selected_image(df, selection):
-    """在侧边栏显示选中行的图片"""
     if selection and "rows" in selection and selection["rows"]:
         idx = selection["rows"][0]
         try:
             row = df.iloc[idx]
             name = row.get("名称", row.get("规格", "未知器件"))
-
             st.sidebar.markdown("---")
             st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
 
@@ -147,9 +149,9 @@ def show_selected_image(df, selection):
             if img_col and row[img_col] and str(row[img_col]).startswith("http"):
                 st.sidebar.image(row[img_col], caption=f"{name} 实物图", use_container_width=True)
             else:
-                st.sidebar.info("暂无图片链接 (请在表格中添加 '图片' 列并填入网址)")
-        except Exception as e:
-            st.sidebar.error(f"图片加载失败: {e}")
+                st.sidebar.info("暂无图片链接")
+        except Exception:
+            pass
 
 
 # ==================== 📱 电子元器件 ====================
@@ -157,7 +159,7 @@ def render_electronics():
     st.markdown("## ☁️ 电子元器件")
     df = load_data(SHEET_ELEC)
     if df.empty:
-        st.info("初始化中...")
+        st.info("表格为空或初始化中...")
         return
 
     c1, c2, c3 = st.columns(3)
@@ -201,23 +203,16 @@ def render_electronics():
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
             event = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                height=500,
-                key="elec_editor",
-                column_config=column_cfg,
-                selection_mode="single-row"
+                display_df, use_container_width=True, num_rows="dynamic", height=500, key="elec_editor",
+                column_config=column_cfg, selection_mode="single-row"
             )
 
-            # 显示图片
             if "elec_editor" in st.session_state:
                 show_selected_image(display_df, st.session_state["elec_editor"].get("selection", {}))
 
             if st.button("💾 保存更改到云端", type="primary"):
-                # 注意：为了保护筛选后的数据，这里简单判断
                 if len(event) != len(df) and len(display_df) != len(df):
-                    st.warning("⚠️ 筛选模式下建议谨慎保存，防止数据丢失。建议清空筛选后再保存。")
+                    st.warning("⚠️ 筛选模式下请谨慎保存。")
                 else:
                     if save_data(event, SHEET_ELEC):
                         st.success("✅ 保存成功！")
@@ -255,17 +250,14 @@ def render_screws():
 
     with col1:
         tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
-
         with tab_in:
             with st.form("screw_add"):
                 spec = st.text_input("规格", placeholder="M3")
                 length = st.text_input("长度", placeholder="10mm")
                 stype = st.text_input("类型", placeholder="圆头")
                 qty = st.number_input("数量", value=50, step=10, min_value=1)
-
                 if st.form_submit_button("➕ 确认入库"):
-                    mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
-                                df['类型'].astype(str) == str(stype))
+                    mask = (df['规格'] == str(spec)) & (df['长度'] == str(length)) & (df['类型'] == str(stype))
                     if mask.any():
                         df.loc[mask, '数量'] += qty
                         st.toast(f"已增加: {spec} +{qty}")
@@ -281,8 +273,8 @@ def render_screws():
         with tab_out:
             st.caption("选择库存领用：")
             if not df.empty:
-                df['display_name'] = df['规格'].astype(str) + " " + df['长度'].astype(str) + " " + df['类型'].astype(
-                    str) + " (余:" + df['数量'].astype(str) + ")"
+                df['display_name'] = df['规格'] + " " + df['长度'] + " " + df['类型'] + " (余:" + df['数量'].astype(
+                    str) + ")"
                 with st.form("screw_out"):
                     selected_item = st.selectbox("选择螺丝", df['display_name'].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
@@ -303,8 +295,6 @@ def render_screws():
         column_cfg = {}
         if "图片" in df.columns:
             column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
-
-        # 这里的 df 去掉 display_name 防止显示多余列
         display_data = df.drop(columns=['display_name']) if 'display_name' in df.columns else df
 
         edited_df = st.data_editor(
@@ -313,19 +303,18 @@ def render_screws():
         )
         if "screw_editor" in st.session_state:
             show_selected_image(display_data, st.session_state["screw_editor"].get("selection", {}))
-
         if st.button("💾 保存五金更改", type="primary"):
             save_data(edited_df, SHEET_SCREW)
             st.success("保存成功！")
             st.rerun()
 
 
-# ==================== 📟 PCB 电路板 ====================
+# ==================== 📟 PCB 电路板 (修复版) ====================
 def render_pcb():
     st.markdown("## 📟 PCB 电路板")
     df = load_data(SHEET_PCB)
     if df.empty:
-        st.info("表格为空...")
+        st.info("表格为空，请确保 Google Sheets 'pcbs' 表头包含：名称, 尺寸, 数量, 位置, 备注")
         if '名称' not in df.columns: return
 
     c1, c2, c3 = st.columns(3)
@@ -338,7 +327,6 @@ def render_pcb():
 
     with col1:
         tab_in, tab_out = st.tabs(["📥 入库", "📤 出库"])
-
         with tab_in:
             with st.form("pcb_add"):
                 name = st.text_input("名称/版本号", placeholder="V1.0")
@@ -347,7 +335,7 @@ def render_pcb():
                 qty = st.number_input("数量", value=5, min_value=1)
 
                 if st.form_submit_button("➕ 确认入库"):
-                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size))
+                    mask = (df['名称'] == str(name)) & (df['尺寸'] == str(size))
                     if mask.any():
                         df.loc[mask, '数量'] += qty
                         st.toast(f"已累加: {name} +{qty}")
@@ -363,8 +351,7 @@ def render_pcb():
         with tab_out:
             st.caption("选择 PCB 领用：")
             if not df.empty:
-                df['display_info'] = df['名称'].astype(str) + " [" + df['尺寸'].astype(str) + "] (余:" + df[
-                    '数量'].astype(str) + ")"
+                df['display_info'] = df['名称'] + " [" + df['尺寸'] + "] (余:" + df['数量'].astype(str) + ")"
                 with st.form("pcb_out"):
                     selected_pcb = st.selectbox("选择板子", df['display_info'].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
@@ -388,12 +375,13 @@ def render_pcb():
         if "图片" in df.columns:
             column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-        display_data = df.drop(columns=['display_info']) if 'display_info' in df.columns else df
+        # 确保显示的数据不包含辅助列
+        display_data = df.drop(columns=['display_info']) if 'display_info' in df.columns else df.copy()
+
         edited_df = st.data_editor(
             display_data, use_container_width=True, num_rows="dynamic", height=500, key="pcb_editor",
             column_config=column_cfg, selection_mode="single-row"
         )
-        # 支持 PCB 也显示图片（如果表里有图片列的话）
         if "pcb_editor" in st.session_state:
             show_selected_image(display_data, st.session_state["pcb_editor"].get("selection", {}))
 
@@ -411,7 +399,6 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.info("💡 提示：点击表格左侧方框可查看图片（需在表中添加'图片'列）。")
     app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝", "PCB电路板"], label_visibility="collapsed")
     st.markdown("---")
     st.caption(f"Status: Online 🟢\nUser: {st.session_state.get('username', 'Admin')}")
