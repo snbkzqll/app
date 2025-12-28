@@ -17,3 +17,10 @@ if __name__ == "__main__":
         "--global.developmentMode=false",
     ]
     sys.exit(stcli.main())
+
+
+
+
+
+
+
