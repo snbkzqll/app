@@ -95,18 +95,24 @@ SHEET_SCREW = "screws"
 SHEET_PCB = "pcbs"
 
 
-# ==================== 🔧 核心函数 (数据处理升级) ====================
+# ==================== 🔧 核心函数 (增强防崩版) ====================
 def load_data(sheet_name):
-    """读取数据，强制列类型，确保数据安全"""
+    """读取数据，强制清洗数据类型，防止报错"""
     try:
         df = conn.read(worksheet=sheet_name, ttl=0)
         df = df.fillna("")
-        df.columns = df.columns.astype(str)  # 强制表头为字符
 
+        # 0. 清理重复列名 (防止 Google Sheets 有空列导致报错)
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        # 1. 强制列名为字符串
+        df.columns = df.columns.astype(str)
+
+        # 2. 数量列强制转整数
         if '数量' in df.columns:
             df['数量'] = pd.to_numeric(df['数量'], errors='coerce').fillna(0).astype(int)
 
-        # 强制其他列为字符串，防止混合类型报错
+        # 3. 其他列强制转字符串 (防止 mixed types 报错)
         for col in df.columns:
             if col != '数量':
                 df[col] = df[col].astype(str).replace('nan', '')
@@ -118,19 +124,16 @@ def load_data(sheet_name):
 
 def save_data_smart(original_df, edited_subset_df, sheet_name):
     """
-    🧠 智能保存函数：
-    即使只编辑了筛选后的几行，也能精准更新回总表，不会弄丢隐藏的数据。
+    🧠 智能保存：支持筛选模式下的修改保存
     """
     try:
-        # 1. 创建原始数据的副本，防止意外修改
+        # 创建副本
         final_df = original_df.copy()
 
-        # 2. 利用索引(Index)进行精准更新
-        # Pandas 的 update 会根据行号（Index）自动匹配
-        # 只有 edited_subset_df 里存在的行，才会被更新到 final_df 里
+        # 利用索引更新数据 (只更新修改过的行)
+        # 注意：这里要求 original_df 和 edited_subset_df 的索引必须对应
         final_df.loc[edited_subset_df.index] = edited_subset_df
 
-        # 3. 推送回 Google Sheets
         conn.update(worksheet=sheet_name, data=final_df)
         st.cache_data.clear()
         return True
@@ -157,8 +160,6 @@ def show_selected_image(df, selection):
     if selection and "rows" in selection and selection["rows"]:
         idx = selection["rows"][0]
         try:
-            # 注意：这里的 idx 是 data_editor 显示数据的相对索引
-            # 如果是筛选后的数据，需要确保传入的 df 就是那个筛选后的 df
             row = df.iloc[idx]
             name = row.get("名称", row.get("规格", "器件"))
 
@@ -179,7 +180,7 @@ def show_selected_image(df, selection):
             pass
 
 
-# ==================== 📱 电子元器件 (升级版) ====================
+# ==================== 📱 电子元器件 (修复Key) ====================
 def render_electronics():
     st.markdown("## ☁️ 电子元器件")
     df = load_data(SHEET_ELEC)
@@ -187,7 +188,6 @@ def render_electronics():
         st.info("数据加载中...")
         return
 
-    # 顶部数据看板
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
     c2.metric("🔢 总数", df['数量'].sum())
@@ -197,19 +197,17 @@ def render_electronics():
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 批量入库", "📤 BOM出库"])
 
-    # === Tab 1: 核心管理 (支持筛选保存) ===
+    # === Tab 1: 管理 ===
     with tab1:
         col1, col2 = st.columns([1, 4])
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
             filter_type = st.multiselect("按类型筛选", df['类型'].unique() if '类型' in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入型号/参数")
-
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
 
         with col2:
-            # 1. 处理筛选逻辑
             display_df = df.copy()
             if filter_type:
                 display_df = display_df[display_df['类型'].isin(filter_type)]
@@ -217,53 +215,47 @@ def render_electronics():
                 mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
                 display_df = display_df[mask]
 
-            # 2. 配置图片列
             column_cfg = {}
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 3. 显示编辑器
+            # 🔥 修复点：更改 key 为 elec_editor_v2，强制清除旧缓存
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="elec_editor",
+                key="elec_editor_v2",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            # 显示图片侧边栏
-            if "elec_editor" in st.session_state:
-                show_selected_image(display_df, st.session_state["elec_editor"].get("selection", {}))
+            if "elec_editor_v2" in st.session_state:
+                show_selected_image(display_df, st.session_state["elec_editor_v2"].get("selection", {}))
 
-            # 4. 智能保存按钮
-            # 只要数据有变化（无论是改了数量，还是加了行），都可以保存
             if st.button("💾 保存更改到云端", type="primary"):
+                # 传入原始大表 df 和 编辑后的小表 edited_df
                 if save_data_smart(df, edited_df, SHEET_ELEC):
-                    st.success("✅ 保存成功！所有更改（包括筛选状态下的修改）已更新。")
+                    st.success("✅ 保存成功！所有更改已同步。")
                     time.sleep(1)
                     st.rerun()
 
-    # === Tab 2: 入库 ===
     with tab2:
         up_file = st.file_uploader("上传 Excel 入库单", type=['xlsx'])
         if up_file:
             new_data = pd.read_excel(up_file)
             st.dataframe(new_data.head())
             if st.button("🚀 确认合并入库"):
-                # 简单追加模式
                 final_df = pd.concat([df, new_data], ignore_index=True)
                 save_data_smart(final_df, final_df, SHEET_ELEC)
                 st.success("入库成功！")
                 st.rerun()
 
-    # === Tab 3: 出库 ===
     with tab3:
-        st.info("💡 提示：对于大批量BOM匹配，建议下载Excel在本地处理。单品出库请直接在“总览”页面修改数量。")
+        st.info("💡 提示：对于大批量BOM匹配，建议下载Excel在本地处理。")
 
 
-# ==================== 🔩 五金螺丝 (全面升级) ====================
+# ==================== 🔩 五金螺丝 (修复Key) ====================
 def render_screws():
     st.markdown("## 🔩 五金螺丝")
     df = load_data(SHEET_SCREW)
@@ -277,20 +269,15 @@ def render_screws():
     c3.metric("⚠️ 缺货", len(df[df['数量'] < 20]), delta_color="inverse")
 
     st.markdown("---")
-    # 统一的三栏布局
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
 
-    # === Tab 1: 管理 (支持搜索保存) ===
     with tab1:
         col1, col2 = st.columns([1, 4])
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
-            # 增加类型筛选
             filter_type = st.multiselect("按类型筛选", df['类型'].unique() if '类型' in df.columns else [])
-            # 增加规格筛选
             filter_spec = st.multiselect("按规格筛选", df['规格'].unique() if '规格' in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入 M3 / 长度等")
-
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"): st.rerun()
 
@@ -306,27 +293,26 @@ def render_screws():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
+            # 🔥 修复点：更改 key 为 screw_editor_v2
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="screw_editor",
+                key="screw_editor_v2",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            if "screw_editor" in st.session_state:
-                show_selected_image(display_df, st.session_state["screw_editor"].get("selection", {}))
+            if "screw_editor_v2" in st.session_state:
+                show_selected_image(display_df, st.session_state["screw_editor_v2"].get("selection", {}))
 
-            # 智能保存
             if st.button("💾 保存五金更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_SCREW):
                     st.success("✅ 保存成功！")
                     time.sleep(1)
                     st.rerun()
 
-    # === Tab 2: 入库表单 ===
     with tab2:
         col_a, col_b = st.columns([1, 2])
         with col_a:
@@ -338,7 +324,6 @@ def render_screws():
                 qty = st.number_input("数量", value=50, step=10, min_value=1)
 
                 if st.form_submit_button("确认入库"):
-                    # 查找是否存在
                     mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
                                 df['类型'].astype(str) == str(stype))
                     if mask.any():
@@ -349,19 +334,15 @@ def render_screws():
                                                  "材质": "不锈钢", "数量": qty, "备注": ""}])
                         df = pd.concat([df, new_row], ignore_index=True)
                         st.toast(f"新规格入库: {spec}")
-                    # 直接保存整个 df
                     save_data_smart(df, df, SHEET_SCREW)
                     time.sleep(1)
                     st.rerun()
 
-    # === Tab 3: 出库表单 ===
     with tab3:
         st.write("### ➖ 快捷领用")
         if not df.empty:
-            # 构造下拉选项
             df['display_name'] = df['规格'].astype(str) + " " + df['长度'].astype(str) + " " + df['类型'].astype(
                 str) + " (余:" + df['数量'].astype(str) + ")"
-
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("screw_out"):
@@ -383,7 +364,7 @@ def render_screws():
             st.warning("暂无库存")
 
 
-# ==================== 📟 PCB 电路板 (全面升级) ====================
+# ==================== 📟 PCB 电路板 (修复Key) ====================
 def render_pcb():
     st.markdown("## 📟 PCB 电路板")
     df = load_data(SHEET_PCB)
@@ -399,15 +380,12 @@ def render_pcb():
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
 
-    # === Tab 1: 管理 (支持搜索保存) ===
     with tab1:
         col1, col2 = st.columns([1, 4])
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
-            # 增加位置筛选
             filter_loc = st.multiselect("按位置筛选", df['位置'].unique() if '位置' in df.columns else [])
             search = st.text_input("搜索 PCB...", placeholder="名称 / 版本号")
-
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"): st.rerun()
 
@@ -425,27 +403,26 @@ def render_pcb():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
+            # 🔥 修复点：更改 key 为 pcb_editor_v2
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="pcb_editor",
+                key="pcb_editor_v2",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            if "pcb_editor" in st.session_state:
-                show_selected_image(display_df, st.session_state["pcb_editor"].get("selection", {}))
+            if "pcb_editor_v2" in st.session_state:
+                show_selected_image(display_df, st.session_state["pcb_editor_v2"].get("selection", {}))
 
-            # 智能保存
             if st.button("💾 保存PCB更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_PCB):
                     st.success("✅ 保存成功！")
                     time.sleep(1)
                     st.rerun()
 
-    # === Tab 2: 入库表单 ===
     with tab2:
         col_a, col_b = st.columns([1, 2])
         with col_a:
@@ -470,13 +447,11 @@ def render_pcb():
                     time.sleep(1)
                     st.rerun()
 
-    # === Tab 3: 出库表单 ===
     with tab3:
         st.write("### ➖ 快捷领用")
         if not df.empty:
             df['display_info'] = df['名称'].astype(str) + " [" + df['尺寸'].astype(str) + "] (余:" + df['数量'].astype(
                 str) + ")"
-
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("pcb_out"):
