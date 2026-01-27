@@ -4,6 +4,7 @@ from streamlit_gsheets import GSheetsConnection
 import re
 import time
 import inspect
+from typing import Optional, Tuple, List
 
 # ==================== 🔐 账号密码配置 ====================
 USERS = {
@@ -50,15 +51,12 @@ def local_css():
             transition: all 0.2s;
         }
         .stButton>button:hover { transform: scale(1.02); }
-        .login-box {
-            padding: 2rem; border-radius: 10px; background-color: white;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 10vh;
-        }
     </style>
     """, unsafe_allow_html=True)
 
 
 local_css()
+
 
 # ==================== 🔐 登录逻辑 ====================
 def check_login():
@@ -94,9 +92,9 @@ SHEET_ELEC = "electronics"
 SHEET_SCREW = "screws"
 SHEET_PCB = "pcbs"
 
+
 # ==================== ✅ Data Editor 兼容组件（解决 selection_mode 报错） ====================
 def _st_data_editor_supports_selection_mode() -> bool:
-    """检查当前 Streamlit 的 st.data_editor 是否支持 selection_mode 参数"""
     try:
         sig = inspect.signature(st.data_editor)
         return "selection_mode" in sig.parameters
@@ -104,7 +102,7 @@ def _st_data_editor_supports_selection_mode() -> bool:
         return False
 
 
-def _find_image_col(columns) -> str | None:
+def _find_image_col(columns) -> Optional[str]:
     for col in ["图片", "图片链接", "Image", "img"]:
         if col in columns:
             return col
@@ -112,7 +110,6 @@ def _find_image_col(columns) -> str | None:
 
 
 def show_row_image_in_sidebar(row: pd.Series):
-    """给一行数据，在侧边栏显示图片"""
     name = row.get("名称", row.get("规格", "器件"))
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
@@ -125,14 +122,10 @@ def show_row_image_in_sidebar(row: pd.Series):
 
 
 def sidebar_row_picker(display_df: pd.DataFrame, key: str):
-    """
-    旧版 Streamlit 降级方案：用 selectbox 选一行，显示图片
-    返回：被选中的 DataFrame index（原 index）；找不到返回 None
-    """
+    """旧版 Streamlit：用 selectbox 选行，侧边栏显示图片"""
     if display_df.empty:
         return None
 
-    # 优先用“名称/规格”做展示
     if "名称" in display_df.columns:
         label_col = "名称"
     elif "规格" in display_df.columns:
@@ -164,10 +157,8 @@ def data_editor_with_optional_selection(
     height: int = 500
 ) -> pd.DataFrame:
     """
-    兼容包装：
-    - 新版：启用 selection_mode='single-row'，并从 session_state 读取 selection 显示图片
-    - 旧版：不传 selection_mode（避免报错），侧边栏用 selectbox 选择行显示图片
-    返回：edited_df
+    新版：支持 selection_mode 单行选中显示图片
+    旧版：不传 selection_mode，避免报错，降级为侧边栏 selectbox 选行显示图片
     """
     supports = _st_data_editor_supports_selection_mode()
 
@@ -183,14 +174,13 @@ def data_editor_with_optional_selection(
         )
         sel = st.session_state.get(key, {}).get("selection", {})
         if sel and "rows" in sel and sel["rows"]:
-            pos = sel["rows"][0]  # 注意：这是 display_df 的位置索引
+            pos = sel["rows"][0]  # display_df 的“位置索引”
             try:
                 show_row_image_in_sidebar(display_df.iloc[pos])
             except Exception:
                 pass
         return edited_df
 
-    # 旧版 Streamlit：没有 selection_mode，走降级方案
     edited_df = st.data_editor(
         display_df,
         use_container_width=True,
@@ -203,25 +193,18 @@ def data_editor_with_optional_selection(
     return edited_df
 
 
-# ==================== 🔧 核心函数 (核弹级修复) ====================
-def load_data(sheet_name):
-    """
-    读取数据，执行“核弹级”类型清洗。
-    将所有非数量列强制转为 String，杜绝 TypeError。
-    """
+# ==================== 🔧 核心函数 ====================
+def load_data(sheet_name: str) -> pd.DataFrame:
+    """读取 + 强制类型清洗：全字符串，数量列转 int"""
     try:
-        df = conn.read(worksheet=sheet_name, ttl=0)
-        df = df.fillna("")
-
+        df = conn.read(worksheet=sheet_name, ttl=0).fillna("")
         df = df.loc[:, ~df.columns.duplicated()]
         df.columns = df.columns.astype(str)
 
-        # 全转字符串，避免 mixed types
-        df = df.astype(str)
-        df = df.replace('nan', '')
+        df = df.astype(str).replace("nan", "")
 
-        if '数量' in df.columns:
-            df['数量'] = pd.to_numeric(df['数量'], errors='coerce').fillna(0).astype(int)
+        if "数量" in df.columns:
+            df["数量"] = pd.to_numeric(df["数量"], errors="coerce").fillna(0).astype(int)
 
         return df
     except Exception as e:
@@ -229,12 +212,13 @@ def load_data(sheet_name):
         return pd.DataFrame()
 
 
-def save_data_smart(original_df, edited_subset_df, sheet_name):
-    """
-    🧠 智能保存：支持筛选模式下的修改保存
-    """
+def save_data_smart(original_df: pd.DataFrame, edited_subset_df: pd.DataFrame, sheet_name: str) -> bool:
+    """智能保存：按 index 回写（筛选/排序后也能保存）"""
     try:
         final_df = original_df.copy()
+
+        # 只回写 edited_subset_df 的 index 行
+        # 注意：如果你允许在筛选视图里新增行，可能会出现 index 不在 original_df 中 -> 需额外处理
         final_df.loc[edited_subset_df.index] = edited_subset_df
 
         conn.update(worksheet=sheet_name, data=final_df)
@@ -245,37 +229,113 @@ def save_data_smart(original_df, edited_subset_df, sheet_name):
         return False
 
 
-def get_sort_value(name):
-    name = str(name).strip()
-    # 不强制 upper，保留 m/u 等可能性；单位统一用 upper 处理
-    name_u = name.upper()
+def get_sort_value(text) -> float:
+    """
+    从字符串里提取数值+单位做智能排序（适合：10R、4.7K、1u、100n、2.2m 等）
+    提取失败返回 inf（排到最后）
+    """
+    s = str(text).strip()
+    if not s:
+        return float("inf")
 
-    match = re.search(r'(\d+\.?\d*)\s*([KMGUNPμRmunp]?)', name)
-    if match:
-        val = float(match.group(1))
-        unit_raw = match.group(2)
-        unit = unit_raw.upper()
+    # 允许单位：K M G R m u μ n p
+    m = re.search(r"(\d+\.?\d*)\s*([KMGROmUuμNnPp]?)", s)
+    if not m:
+        return float("inf")
 
-        # 注意：m（毫）和 M（兆）区别
-        multipliers = {
-            '': 1,
-            'R': 1,
-            'K': 1e3,
-            'M': 1e6,
-            'G': 1e9,
-            'U': 1e-6,
-            'μ': 1e-6,
-            'N': 1e-9,
-            'P': 1e-12,
-        }
-        if unit_raw == 'm':  # milli
-            return val * 1e-3
+    val = float(m.group(1))
+    unit = m.group(2)
 
-        if 'F' in name_u:
-            pass
-        return val * multipliers.get(unit, 1)
+    # 注意 m(毫) vs M(兆)
+    multipliers = {
+        "": 1.0,
+        "R": 1.0,
+        "K": 1e3,
+        "M": 1e6,
+        "G": 1e9,
+        "m": 1e-3,
+        "U": 1e-6,
+        "u": 1e-6,
+        "μ": 1e-6,
+        "N": 1e-9,
+        "n": 1e-9,
+        "P": 1e-12,
+        "p": 1e-12,
+    }
+    return val * multipliers.get(unit, 1.0)
 
-    return float('inf')
+
+def apply_sort(display_df: pd.DataFrame, sort_cols: List[str], ascending: List[bool]) -> pd.DataFrame:
+    """稳定排序（保留原 index，便于保存回写）"""
+    sort_cols = [c for c in sort_cols if c and c in display_df.columns]
+    if not sort_cols:
+        return display_df
+    return display_df.sort_values(by=sort_cols, ascending=ascending[:len(sort_cols)], kind="mergesort")
+
+
+def sort_controls(prefix: str, df_columns: List[str]) -> Tuple[str, str, str, bool, Optional[str]]:
+    """
+    返回：
+    - 主排序列
+    - 次排序列
+    - 主排序顺序（升序/降序）
+    - 是否启用智能排序
+    - 智能排序目标列（默认跟随主排序列）
+    """
+    # 过滤掉图片列（一般没必要排序）
+    cols = [c for c in df_columns if c not in ["图片", "图片链接", "Image", "img"]]
+    if not cols:
+        cols = df_columns
+
+    st.markdown("##### ↕️ 排序")
+    primary = st.selectbox("主排序列", ["(不排序)"] + cols, index=0, key=f"{prefix}_sort_primary")
+    secondary = st.selectbox("次排序列", ["(无)"] + cols, index=0, key=f"{prefix}_sort_secondary")
+    order = st.radio("主排序顺序", ["升序", "降序"], horizontal=True, key=f"{prefix}_sort_order")
+
+    smart_on = st.checkbox("智能排序（识别 10R/4.7K/1u 等）", value=False, key=f"{prefix}_smart_sort")
+
+    # 智能排序默认作用于主排序列
+    smart_target = None
+    if smart_on and primary and primary != "(不排序)":
+        smart_target = primary
+
+    return primary, secondary, order, smart_on, smart_target
+
+
+def apply_sort_with_optional_smart(
+    display_df: pd.DataFrame,
+    primary: str,
+    secondary: str,
+    order: str,
+    smart_on: bool,
+    smart_target: Optional[str]
+) -> pd.DataFrame:
+    """把排序应用到 display_df（可选智能排序）"""
+    sort_cols = []
+    ascending = []
+
+    if primary and primary != "(不排序)":
+        sort_cols.append(primary)
+        ascending.append(order == "升序")
+
+    if secondary and secondary != "(无)" and secondary not in sort_cols:
+        sort_cols.append(secondary)
+        ascending.append(True)  # 次排序默认升序（你也可以加控件做次排序顺序）
+
+    if not sort_cols:
+        return display_df
+
+    if smart_on and smart_target and smart_target in display_df.columns:
+        tmp_col = "__smart_sort_key__"
+        # 只对智能列生成 key；其他列照常
+        display_df[tmp_col] = display_df[smart_target].map(get_sort_value)
+
+        # 替换 sort_cols 里的目标列为 tmp_col
+        real_sort_cols = [tmp_col if c == smart_target else c for c in sort_cols]
+        out = apply_sort(display_df, real_sort_cols, ascending).drop(columns=[tmp_col])
+        return out
+
+    return apply_sort(display_df, sort_cols, ascending)
 
 
 # ==================== 📱 电子元器件 ====================
@@ -288,31 +348,41 @@ def render_electronics():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
-    c2.metric("🔢 总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
-    low_stock = df[df['数量'] < 10] if '数量' in df.columns else df.iloc[0:0]
+    c2.metric("🔢 总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
+    low_stock = df[df["数量"] < 10] if "数量" in df.columns else df.iloc[0:0]
     c3.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 批量入库", "📤 BOM出库"])
 
-    # === Tab 1: 管理 ===
     with tab1:
         col1, col2 = st.columns([1, 4])
+
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
-            filter_type = st.multiselect("按类型筛选", df['类型'].unique() if '类型' in df.columns else [])
+            filter_type = st.multiselect("按类型筛选", df["类型"].unique() if "类型" in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入型号/参数")
+            st.divider()
+
+            # ✅ 排序控件（电子）
+            primary, secondary, order, smart_on, smart_target = sort_controls("elec", df.columns.tolist())
+
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True):
                 st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_type and '类型' in display_df.columns:
-                display_df = display_df[display_df['类型'].isin(filter_type)]
+
+            if filter_type and "类型" in display_df.columns:
+                display_df = display_df[display_df["类型"].isin(filter_type)]
+
             if search:
                 mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
+
+            # ✅ 应用排序（保留 index）
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {}
             if "图片" in display_df.columns:
@@ -332,7 +402,7 @@ def render_electronics():
                     st.rerun()
 
     with tab2:
-        up_file = st.file_uploader("上传 Excel 入库单", type=['xlsx'])
+        up_file = st.file_uploader("上传 Excel 入库单", type=["xlsx"])
         if up_file:
             new_data = pd.read_excel(up_file)
             st.dataframe(new_data.head())
@@ -356,32 +426,42 @@ def render_screws():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
-    c2.metric("🔢 总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
-    c3.metric("⚠️ 缺货", len(df[df['数量'] < 20]) if '数量' in df.columns else 0, delta_color="inverse")
+    c2.metric("🔢 总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
+    c3.metric("⚠️ 缺货", len(df[df["数量"] < 20]) if "数量" in df.columns else 0, delta_color="inverse")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
 
     with tab1:
         col1, col2 = st.columns([1, 4])
+
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
-            filter_type = st.multiselect("按类型筛选", df['类型'].unique() if '类型' in df.columns else [])
-            filter_spec = st.multiselect("按规格筛选", df['规格'].unique() if '规格' in df.columns else [])
+            filter_type = st.multiselect("按类型筛选", df["类型"].unique() if "类型" in df.columns else [])
+            filter_spec = st.multiselect("按规格筛选", df["规格"].unique() if "规格" in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入 M3 / 长度等")
+            st.divider()
+
+            # ✅ 排序控件（螺丝）
+            primary, secondary, order, smart_on, smart_target = sort_controls("screw", df.columns.tolist())
+
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"):
                 st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_type and '类型' in display_df.columns:
-                display_df = display_df[display_df['类型'].isin(filter_type)]
-            if filter_spec and '规格' in display_df.columns:
-                display_df = display_df[display_df['规格'].isin(filter_spec)]
+
+            if filter_type and "类型" in display_df.columns:
+                display_df = display_df[display_df["类型"].isin(filter_type)]
+            if filter_spec and "规格" in display_df.columns:
+                display_df = display_df[display_df["规格"].isin(filter_spec)]
             if search:
                 mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
+
+            # ✅ 应用排序
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {}
             if "图片" in display_df.columns:
@@ -412,12 +492,12 @@ def render_screws():
 
                 if st.form_submit_button("确认入库"):
                     mask = (
-                        (df['规格'].astype(str) == str(spec)) &
-                        (df['长度'].astype(str) == str(length)) &
-                        (df['类型'].astype(str) == str(stype))
+                        (df.get("规格", "").astype(str) == str(spec)) &
+                        (df.get("长度", "").astype(str) == str(length)) &
+                        (df.get("类型", "").astype(str) == str(stype))
                     )
                     if mask.any():
-                        df.loc[mask, '数量'] = pd.to_numeric(df.loc[mask, '数量'], errors='coerce').fillna(0).astype(int) + int(qty)
+                        df.loc[mask, "数量"] = pd.to_numeric(df.loc[mask, "数量"], errors="coerce").fillna(0).astype(int) + int(qty)
                         st.toast(f"库存已累加: {spec}")
                     else:
                         new_row = pd.DataFrame([{
@@ -439,26 +519,26 @@ def render_screws():
         st.write("### ➖ 快捷领用")
         if not df.empty:
             df2 = df.copy()
-            df2['display_name'] = (
-                df2.get('规格', '').astype(str) + " " +
-                df2.get('长度', '').astype(str) + " " +
-                df2.get('类型', '').astype(str) +
-                " (余:" + df2.get('数量', 0).astype(str) + ")"
+            df2["display_name"] = (
+                df2.get("规格", "").astype(str) + " " +
+                df2.get("长度", "").astype(str) + " " +
+                df2.get("类型", "").astype(str) +
+                " (余:" + df2.get("数量", 0).astype(str) + ")"
             )
 
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("screw_out"):
-                    selected_item = st.selectbox("选择螺丝", df2['display_name'].tolist())
+                    selected_item = st.selectbox("选择螺丝", df2["display_name"].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
 
                     if st.form_submit_button("确认出库"):
-                        idx = df2[df2['display_name'] == selected_item].index[0]
-                        current = int(df.at[idx, '数量'])
+                        idx = df2[df2["display_name"] == selected_item].index[0]
+                        current = int(df.at[idx, "数量"])
                         if current < out_qty:
                             st.error(f"库存不足！当前仅剩 {current}")
                         else:
-                            df.at[idx, '数量'] = current - int(out_qty)
+                            df.at[idx, "数量"] = current - int(out_qty)
                             save_data_smart(df, df, SHEET_SCREW)
                             st.success("领用成功！")
                             time.sleep(1)
@@ -477,29 +557,40 @@ def render_pcb():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 板子型号", len(df))
-    c2.metric("🔢 库存总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
-    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]) if '数量' in df.columns else 0, delta_color="inverse")
+    c2.metric("🔢 库存总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
+    c3.metric("⚠️ 低库存", len(df[df["数量"] < 5]) if "数量" in df.columns else 0, delta_color="inverse")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
 
     with tab1:
         col1, col2 = st.columns([1, 4])
+
         with col1:
             st.markdown("##### 🔍 筛选与搜索")
-            filter_loc = st.multiselect("按位置筛选", df['位置'].unique() if '位置' in df.columns else [])
+            filter_loc = st.multiselect("按位置筛选", df["位置"].unique() if "位置" in df.columns else [])
             search = st.text_input("搜索 PCB...", placeholder="名称 / 版本号")
+            st.divider()
+
+            # ✅ 排序控件（PCB）
+            primary, secondary, order, smart_on, smart_target = sort_controls("pcb", df.columns.tolist())
+
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"):
                 st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_loc and '位置' in display_df.columns:
-                display_df = display_df[display_df['位置'].isin(filter_loc)]
+
+            if filter_loc and "位置" in display_df.columns:
+                display_df = display_df[display_df["位置"].isin(filter_loc)]
+
             if search:
                 mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
+
+            # ✅ 应用排序
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {
                 "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
@@ -532,11 +623,13 @@ def render_pcb():
                 qty = st.number_input("数量", value=5, min_value=1)
 
                 if st.form_submit_button("确认入库"):
-                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size)) if \
-                        ('名称' in df.columns and '尺寸' in df.columns) else pd.Series([False] * len(df))
+                    if "名称" in df.columns and "尺寸" in df.columns:
+                        mask = (df["名称"].astype(str) == str(name)) & (df["尺寸"].astype(str) == str(size))
+                    else:
+                        mask = pd.Series([False] * len(df))
 
                     if mask.any():
-                        df.loc[mask, '数量'] = pd.to_numeric(df.loc[mask, '数量'], errors='coerce').fillna(0).astype(int) + int(qty)
+                        df.loc[mask, "数量"] = pd.to_numeric(df.loc[mask, "数量"], errors="coerce").fillna(0).astype(int) + int(qty)
                         st.toast(f"库存已累加: {name}")
                     else:
                         new_row = pd.DataFrame([{
@@ -557,24 +650,25 @@ def render_pcb():
         st.write("### ➖ 快捷领用")
         if not df.empty:
             df2 = df.copy()
-            df2['display_info'] = (
-                df2.get('名称', '').astype(str) +
-                " [" + df2.get('尺寸', '').astype(str) + "] " +
-                "(余:" + df2.get('数量', 0).astype(str) + ")"
+            df2["display_info"] = (
+                df2.get("名称", "").astype(str) +
+                " [" + df2.get("尺寸", "").astype(str) + "] " +
+                "(余:" + df2.get("数量", 0).astype(str) + ")"
             )
+
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("pcb_out"):
-                    selected_pcb = st.selectbox("选择板子", df2['display_info'].tolist())
+                    selected_pcb = st.selectbox("选择板子", df2["display_info"].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
 
                     if st.form_submit_button("确认出库"):
-                        idx = df2[df2['display_info'] == selected_pcb].index[0]
-                        current = int(df.at[idx, '数量'])
+                        idx = df2[df2["display_info"] == selected_pcb].index[0]
+                        current = int(df.at[idx, "数量"])
                         if current < out_qty:
                             st.error("库存不足！")
                         else:
-                            df.at[idx, '数量'] = current - int(out_qty)
+                            df.at[idx, "数量"] = current - int(out_qty)
                             save_data_smart(df, df, SHEET_PCB)
                             st.success("领用成功！")
                             time.sleep(1)
@@ -586,7 +680,7 @@ def render_pcb():
 # ==================== 🚀 主入口 ====================
 with st.sidebar:
     st.title("☁️ 云端管家")
-    if 'username' in st.session_state:
+    if "username" in st.session_state:
         st.write(f"👤 **{st.session_state.username}**")
         if st.button("🚪 退出"):
             st.session_state.logged_in = False
