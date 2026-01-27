@@ -342,4 +342,179 @@ def render_screws():
                     mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
                                 df['类型'].astype(str) == str(stype))
                     if mask.any():
-                        df.loc[mask, '数量'] +=
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"库存已累加: {spec}")
+                    else:
+                        new_row = pd.DataFrame([{"规格": str(spec), "长度": str(length), "类型": str(stype),
+                                                 "材质": "不锈钢", "数量": qty, "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新规格入库: {spec}")
+                    # 直接保存整个 df
+                    save_data_smart(df, df, SHEET_SCREW)
+                    time.sleep(1)
+                    st.rerun()
+
+    # === Tab 3: 出库表单 ===
+    with tab3:
+        st.write("### ➖ 快捷领用")
+        if not df.empty:
+            # 构造下拉选项
+            df['display_name'] = df['规格'].astype(str) + " " + df['长度'].astype(str) + " " + df['类型'].astype(
+                str) + " (余:" + df['数量'].astype(str) + ")"
+
+            col_out_1, col_out_2 = st.columns([1, 2])
+            with col_out_1:
+                with st.form("screw_out"):
+                    selected_item = st.selectbox("选择螺丝", df['display_name'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, min_value=1)
+
+                    if st.form_submit_button("确认出库"):
+                        idx = df[df['display_name'] == selected_item].index[0]
+                        current = df.at[idx, '数量']
+                        if current < out_qty:
+                            st.error(f"库存不足！当前仅剩 {current}")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            save_data_smart(df, df.drop(columns=['display_name']), SHEET_SCREW)
+                            st.success("领用成功！")
+                            time.sleep(1)
+                            st.rerun()
+        else:
+            st.warning("暂无库存")
+
+
+# ==================== 📟 PCB 电路板 (全面升级) ====================
+def render_pcb():
+    st.markdown("## 📟 PCB 电路板")
+    df = load_data(SHEET_PCB)
+    if df.empty:
+        st.info("数据加载中...")
+        if '名称' not in df.columns: return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("📦 板子型号", len(df))
+    c2.metric("🔢 库存总数", df['数量'].sum())
+    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]), delta_color="inverse")
+
+    st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
+
+    # === Tab 1: 管理 (支持搜索保存) ===
+    with tab1:
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            st.markdown("##### 🔍 筛选与搜索")
+            # 增加位置筛选
+            filter_loc = st.multiselect("按位置筛选", df['位置'].unique() if '位置' in df.columns else [])
+            search = st.text_input("搜索 PCB...", placeholder="名称 / 版本号")
+
+            st.divider()
+            if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"): st.rerun()
+
+        with col2:
+            display_df = df.copy()
+            if filter_loc: display_df = display_df[display_df['位置'].isin(filter_loc)]
+            if search:
+                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+                display_df = display_df[mask]
+
+            column_cfg = {
+                "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
+                "名称": st.column_config.TextColumn("名称", required=True),
+            }
+            if "图片" in display_df.columns:
+                column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
+
+            edited_df = st.data_editor(
+                display_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                height=500,
+                key="pcb_editor",
+                column_config=column_cfg,
+                selection_mode="single-row"
+            )
+
+            if "pcb_editor" in st.session_state:
+                show_selected_image(display_df, st.session_state["pcb_editor"].get("selection", {}))
+
+            # 智能保存
+            if st.button("💾 保存PCB更改", type="primary"):
+                if save_data_smart(df, edited_df, SHEET_PCB):
+                    st.success("✅ 保存成功！")
+                    time.sleep(1)
+                    st.rerun()
+
+    # === Tab 2: 入库表单 ===
+    with tab2:
+        col_a, col_b = st.columns([1, 2])
+        with col_a:
+            with st.form("pcb_add"):
+                st.write("### ➕ 新板入库")
+                name = st.text_input("名称/版本号", placeholder="V1.0")
+                size = st.text_input("尺寸", placeholder="10x10cm")
+                loc = st.text_input("位置", placeholder="A-01")
+                qty = st.number_input("数量", value=5, min_value=1)
+
+                if st.form_submit_button("确认入库"):
+                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size))
+                    if mask.any():
+                        df.loc[mask, '数量'] += qty
+                        st.toast(f"库存已累加: {name}")
+                    else:
+                        new_row = pd.DataFrame(
+                            [{"名称": str(name), "尺寸": str(size), "数量": qty, "位置": str(loc), "备注": ""}])
+                        df = pd.concat([df, new_row], ignore_index=True)
+                        st.toast(f"新板入库: {name}")
+                    save_data_smart(df, df, SHEET_PCB)
+                    time.sleep(1)
+                    st.rerun()
+
+    # === Tab 3: 出库表单 ===
+    with tab3:
+        st.write("### ➖ 快捷领用")
+        if not df.empty:
+            df['display_info'] = df['名称'].astype(str) + " [" + df['尺寸'].astype(str) + "] (余:" + df['数量'].astype(
+                str) + ")"
+
+            col_out_1, col_out_2 = st.columns([1, 2])
+            with col_out_1:
+                with st.form("pcb_out"):
+                    selected_pcb = st.selectbox("选择板子", df['display_info'].tolist())
+                    out_qty = st.number_input("领用数量", value=1, min_value=1)
+
+                    if st.form_submit_button("确认出库"):
+                        idx = df[df['display_info'] == selected_pcb].index[0]
+                        current = df.at[idx, '数量']
+                        if current < out_qty:
+                            st.error("库存不足！")
+                        else:
+                            df.at[idx, '数量'] -= out_qty
+                            save_data_smart(df, df.drop(columns=['display_info']), SHEET_PCB)
+                            st.success("领用成功！")
+                            time.sleep(1)
+                            st.rerun()
+        else:
+            st.warning("暂无库存")
+
+
+# ==================== 🚀 主入口 ====================
+with st.sidebar:
+    st.title("☁️ 云端管家")
+    if 'username' in st.session_state:
+        st.write(f"👤 **{st.session_state.username}**")
+        if st.button("🚪 退出"):
+            st.session_state.logged_in = False
+            st.rerun()
+
+    st.markdown("---")
+    app_mode = st.radio("切换仓库", ["电子元器件", "五金螺丝", "PCB电路板"], label_visibility="collapsed")
+    st.markdown("---")
+    st.caption("Status: Online 🟢")
+
+if app_mode == "电子元器件":
+    render_electronics()
+elif app_mode == "五金螺丝":
+    render_screws()
+else:
+    render_pcb()
