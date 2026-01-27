@@ -95,30 +95,36 @@ SHEET_SCREW = "screws"
 SHEET_PCB = "pcbs"
 
 
-# ==================== 🔧 核心函数 (增强防崩版) ====================
+# ==================== 🔧 核心函数 (核弹级修复) ====================
 def load_data(sheet_name):
-    """读取数据，强制清洗数据类型，防止报错"""
+    """
+    读取数据，执行“核弹级”类型清洗。
+    将所有非数量列强制转为 String，杜绝 TypeError。
+    """
     try:
+        # 1. 读取数据
         df = conn.read(worksheet=sheet_name, ttl=0)
         df = df.fillna("")
 
-        # 0. 清理重复列名 (防止 Google Sheets 有空列导致报错)
+        # 2. 清理列名 (防止空列名或重复)
         df = df.loc[:, ~df.columns.duplicated()]
-
-        # 1. 强制列名为字符串
         df.columns = df.columns.astype(str)
 
-        # 2. 数量列强制转整数
+        # 3. 【关键步骤】先将整个 DataFrame 转为字符串
+        # 这能解决 99% 的 mixed types 问题
+        df = df.astype(str)
+
+        # 4. 把 'nan' 这种字符串替换回空字符串
+        df = df.replace('nan', '')
+
+        # 5. 单独把 '数量' 列转回整数
         if '数量' in df.columns:
+            # errors='coerce' 会把无法转数字的变成 NaN，然后 fillna(0) 变 0
             df['数量'] = pd.to_numeric(df['数量'], errors='coerce').fillna(0).astype(int)
 
-        # 3. 其他列强制转字符串 (防止 mixed types 报错)
-        for col in df.columns:
-            if col != '数量':
-                df[col] = df[col].astype(str).replace('nan', '')
         return df
     except Exception as e:
-        st.error(f"连接云端失败: {e}")
+        st.error(f"数据读取错误: {e}")
         return pd.DataFrame()
 
 
@@ -131,7 +137,7 @@ def save_data_smart(original_df, edited_subset_df, sheet_name):
         final_df = original_df.copy()
 
         # 利用索引更新数据 (只更新修改过的行)
-        # 注意：这里要求 original_df 和 edited_subset_df 的索引必须对应
+        # 只有在 edited_subset_df 里的行会被更新回总表
         final_df.loc[edited_subset_df.index] = edited_subset_df
 
         conn.update(worksheet=sheet_name, data=final_df)
@@ -160,6 +166,7 @@ def show_selected_image(df, selection):
     if selection and "rows" in selection and selection["rows"]:
         idx = selection["rows"][0]
         try:
+            # 注意：这里的 idx 是 display_df 的相对索引
             row = df.iloc[idx]
             name = row.get("名称", row.get("规格", "器件"))
 
@@ -180,7 +187,7 @@ def show_selected_image(df, selection):
             pass
 
 
-# ==================== 📱 电子元器件 (修复Key) ====================
+# ==================== 📱 电子元器件 ====================
 def render_electronics():
     st.markdown("## ☁️ 电子元器件")
     df = load_data(SHEET_ELEC)
@@ -219,22 +226,21 @@ def render_electronics():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更改 key 为 elec_editor_v2，强制清除旧缓存
+            # 🔥 修复点：更换 Key 强制刷新缓存
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="elec_editor_v2",
+                key="elec_editor_fix_v3",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            if "elec_editor_v2" in st.session_state:
-                show_selected_image(display_df, st.session_state["elec_editor_v2"].get("selection", {}))
+            if "elec_editor_fix_v3" in st.session_state:
+                show_selected_image(display_df, st.session_state["elec_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存更改到云端", type="primary"):
-                # 传入原始大表 df 和 编辑后的小表 edited_df
                 if save_data_smart(df, edited_df, SHEET_ELEC):
                     st.success("✅ 保存成功！所有更改已同步。")
                     time.sleep(1)
@@ -255,7 +261,7 @@ def render_electronics():
         st.info("💡 提示：对于大批量BOM匹配，建议下载Excel在本地处理。")
 
 
-# ==================== 🔩 五金螺丝 (修复Key) ====================
+# ==================== 🔩 五金螺丝 (全面升级) ====================
 def render_screws():
     st.markdown("## 🔩 五金螺丝")
     df = load_data(SHEET_SCREW)
@@ -293,19 +299,19 @@ def render_screws():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更改 key 为 screw_editor_v2
+            # 🔥 修复点：更换 Key
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="screw_editor_v2",
+                key="screw_editor_fix_v3",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            if "screw_editor_v2" in st.session_state:
-                show_selected_image(display_df, st.session_state["screw_editor_v2"].get("selection", {}))
+            if "screw_editor_fix_v3" in st.session_state:
+                show_selected_image(display_df, st.session_state["screw_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存五金更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_SCREW):
@@ -324,6 +330,7 @@ def render_screws():
                 qty = st.number_input("数量", value=50, step=10, min_value=1)
 
                 if st.form_submit_button("确认入库"):
+                    # 全转字符串比较，防止类型报错
                     mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
                                 df['类型'].astype(str) == str(stype))
                     if mask.any():
@@ -364,7 +371,7 @@ def render_screws():
             st.warning("暂无库存")
 
 
-# ==================== 📟 PCB 电路板 (修复Key) ====================
+# ==================== 📟 PCB 电路板 (全面升级) ====================
 def render_pcb():
     st.markdown("## 📟 PCB 电路板")
     df = load_data(SHEET_PCB)
@@ -403,19 +410,19 @@ def render_pcb():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更改 key 为 pcb_editor_v2
+            # 🔥 修复点：更换 Key
             edited_df = st.data_editor(
                 display_df,
                 use_container_width=True,
                 num_rows="dynamic",
                 height=500,
-                key="pcb_editor_v2",
+                key="pcb_editor_fix_v3",
                 column_config=column_cfg,
                 selection_mode="single-row"
             )
 
-            if "pcb_editor_v2" in st.session_state:
-                show_selected_image(display_df, st.session_state["pcb_editor_v2"].get("selection", {}))
+            if "pcb_editor_fix_v3" in st.session_state:
+                show_selected_image(display_df, st.session_state["pcb_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存PCB更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_PCB):
