@@ -3,6 +3,7 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 import re
 import time
+import inspect
 
 # ==================== 🔐 账号密码配置 ====================
 USERS = {
@@ -23,29 +24,29 @@ def local_css():
         [data-testid="stSidebar"] * { color: #f1f5f9 !important; }
         h1, h2, h3 {
             background: -webkit-linear-gradient(45deg, #2563eb, #9333ea);
-            -webkit-background-clip: text; 
+            -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            font-family: 'Segoe UI', sans-serif; 
+            font-family: 'Segoe UI', sans-serif;
             font-weight: 800 !important;
         }
         div[data-testid="metric-container"] {
-            background-color: rgba(255, 255, 255, 0.9); 
+            background-color: rgba(255, 255, 255, 0.9);
             border-radius: 15px;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); 
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
             padding: 15px;
             border: 1px solid #e5e7eb;
         }
         [data-testid="stDataEditor"] {
-            background-color: white; 
-            border-radius: 15px; 
+            background-color: white;
+            border-radius: 15px;
             padding: 10px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
-        .stButton>button { 
-            border-radius: 50px; 
-            font-weight: bold; 
-            border: none; 
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+        .stButton>button {
+            border-radius: 50px;
+            font-weight: bold;
+            border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             transition: all 0.2s;
         }
         .stButton>button:hover { transform: scale(1.02); }
@@ -58,7 +59,6 @@ def local_css():
 
 
 local_css()
-
 
 # ==================== 🔐 登录逻辑 ====================
 def check_login():
@@ -94,6 +94,114 @@ SHEET_ELEC = "electronics"
 SHEET_SCREW = "screws"
 SHEET_PCB = "pcbs"
 
+# ==================== ✅ Data Editor 兼容组件（解决 selection_mode 报错） ====================
+def _st_data_editor_supports_selection_mode() -> bool:
+    """检查当前 Streamlit 的 st.data_editor 是否支持 selection_mode 参数"""
+    try:
+        sig = inspect.signature(st.data_editor)
+        return "selection_mode" in sig.parameters
+    except Exception:
+        return False
+
+
+def _find_image_col(columns) -> str | None:
+    for col in ["图片", "图片链接", "Image", "img"]:
+        if col in columns:
+            return col
+    return None
+
+
+def show_row_image_in_sidebar(row: pd.Series):
+    """给一行数据，在侧边栏显示图片"""
+    name = row.get("名称", row.get("规格", "器件"))
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
+
+    img_col = _find_image_col(row.index)
+    if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
+        st.sidebar.image(row[img_col], caption=f"{name} 实物图", use_container_width=True)
+    else:
+        st.sidebar.info("暂无图片链接")
+
+
+def sidebar_row_picker(display_df: pd.DataFrame, key: str):
+    """
+    旧版 Streamlit 降级方案：用 selectbox 选一行，显示图片
+    返回：被选中的 DataFrame index（原 index）；找不到返回 None
+    """
+    if display_df.empty:
+        return None
+
+    # 优先用“名称/规格”做展示
+    if "名称" in display_df.columns:
+        label_col = "名称"
+    elif "规格" in display_df.columns:
+        label_col = "规格"
+    else:
+        label_col = display_df.columns[0]
+
+    options = [f"[{idx}] {str(display_df.at[idx, label_col])}" for idx in display_df.index]
+    picked = st.sidebar.selectbox("📌 选择一行查看图片（兼容模式）", options, key=f"{key}_picker")
+
+    if not picked:
+        return None
+
+    try:
+        idx = int(picked.split("]")[0].replace("[", "").strip())
+    except Exception:
+        return None
+
+    if idx in display_df.index:
+        show_row_image_in_sidebar(display_df.loc[idx])
+        return idx
+    return None
+
+
+def data_editor_with_optional_selection(
+    display_df: pd.DataFrame,
+    key: str,
+    column_cfg: dict,
+    height: int = 500
+) -> pd.DataFrame:
+    """
+    兼容包装：
+    - 新版：启用 selection_mode='single-row'，并从 session_state 读取 selection 显示图片
+    - 旧版：不传 selection_mode（避免报错），侧边栏用 selectbox 选择行显示图片
+    返回：edited_df
+    """
+    supports = _st_data_editor_supports_selection_mode()
+
+    if supports:
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            height=height,
+            key=key,
+            column_config=column_cfg,
+            selection_mode="single-row",
+        )
+        sel = st.session_state.get(key, {}).get("selection", {})
+        if sel and "rows" in sel and sel["rows"]:
+            pos = sel["rows"][0]  # 注意：这是 display_df 的位置索引
+            try:
+                show_row_image_in_sidebar(display_df.iloc[pos])
+            except Exception:
+                pass
+        return edited_df
+
+    # 旧版 Streamlit：没有 selection_mode，走降级方案
+    edited_df = st.data_editor(
+        display_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        height=height,
+        key=key,
+        column_config=column_cfg,
+    )
+    sidebar_row_picker(display_df, key=key)
+    return edited_df
+
 
 # ==================== 🔧 核心函数 (核弹级修复) ====================
 def load_data(sheet_name):
@@ -102,24 +210,17 @@ def load_data(sheet_name):
     将所有非数量列强制转为 String，杜绝 TypeError。
     """
     try:
-        # 1. 读取数据
         df = conn.read(worksheet=sheet_name, ttl=0)
         df = df.fillna("")
 
-        # 2. 清理列名 (防止空列名或重复)
         df = df.loc[:, ~df.columns.duplicated()]
         df.columns = df.columns.astype(str)
 
-        # 3. 【关键步骤】先将整个 DataFrame 转为字符串
-        # 这能解决 99% 的 mixed types 问题
+        # 全转字符串，避免 mixed types
         df = df.astype(str)
-
-        # 4. 把 'nan' 这种字符串替换回空字符串
         df = df.replace('nan', '')
 
-        # 5. 单独把 '数量' 列转回整数
         if '数量' in df.columns:
-            # errors='coerce' 会把无法转数字的变成 NaN，然后 fillna(0) 变 0
             df['数量'] = pd.to_numeric(df['数量'], errors='coerce').fillna(0).astype(int)
 
         return df
@@ -133,11 +234,7 @@ def save_data_smart(original_df, edited_subset_df, sheet_name):
     🧠 智能保存：支持筛选模式下的修改保存
     """
     try:
-        # 创建副本
         final_df = original_df.copy()
-
-        # 利用索引更新数据 (只更新修改过的行)
-        # 只有在 edited_subset_df 里的行会被更新回总表
         final_df.loc[edited_subset_df.index] = edited_subset_df
 
         conn.update(worksheet=sheet_name, data=final_df)
@@ -149,42 +246,36 @@ def save_data_smart(original_df, edited_subset_df, sheet_name):
 
 
 def get_sort_value(name):
-    name = str(name).upper().strip()
-    match = re.search(r'(\d+\.?\d*)\s*([KMGUNPμR]?)', name)
+    name = str(name).strip()
+    # 不强制 upper，保留 m/u 等可能性；单位统一用 upper 处理
+    name_u = name.upper()
+
+    match = re.search(r'(\d+\.?\d*)\s*([KMGUNPμRmunp]?)', name)
     if match:
         val = float(match.group(1))
-        unit = match.group(2)
-        multipliers = {'K': 1e3, 'M': 1e6, 'G': 1e9, 'R': 1, '': 1, 'M': 1e-3, 'U': 1e-6, 'μ': 1e-6, 'N': 1e-9,
-                       'P': 1e-12}
-        if 'F' in name: pass
-        return val * multipliers.get(unit, 1)
-    return float('inf')
+        unit_raw = match.group(2)
+        unit = unit_raw.upper()
 
+        # 注意：m（毫）和 M（兆）区别
+        multipliers = {
+            '': 1,
+            'R': 1,
+            'K': 1e3,
+            'M': 1e6,
+            'G': 1e9,
+            'U': 1e-6,
+            'μ': 1e-6,
+            'N': 1e-9,
+            'P': 1e-12,
+        }
+        if unit_raw == 'm':  # milli
+            return val * 1e-3
 
-# ==================== 🖼️ 图片显示组件 ====================
-def show_selected_image(df, selection):
-    if selection and "rows" in selection and selection["rows"]:
-        idx = selection["rows"][0]
-        try:
-            # 注意：这里的 idx 是 display_df 的相对索引
-            row = df.iloc[idx]
-            name = row.get("名称", row.get("规格", "器件"))
-
-            st.sidebar.markdown("---")
-            st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
-
-            img_col = None
-            for col in ["图片", "图片链接", "Image", "img"]:
-                if col in df.columns:
-                    img_col = col
-                    break
-
-            if img_col and row[img_col] and str(row[img_col]).startswith("http"):
-                st.sidebar.image(row[img_col], caption=f"{name} 实物图", use_container_width=True)
-            else:
-                st.sidebar.info("暂无图片链接")
-        except Exception:
+        if 'F' in name_u:
             pass
+        return val * multipliers.get(unit, 1)
+
+    return float('inf')
 
 
 # ==================== 📱 电子元器件 ====================
@@ -197,8 +288,8 @@ def render_electronics():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
-    c2.metric("🔢 总数", df['数量'].sum())
-    low_stock = df[df['数量'] < 10]
+    c2.metric("🔢 总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
+    low_stock = df[df['数量'] < 10] if '数量' in df.columns else df.iloc[0:0]
     c3.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
 
     st.markdown("---")
@@ -212,33 +303,27 @@ def render_electronics():
             filter_type = st.multiselect("按类型筛选", df['类型'].unique() if '类型' in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入型号/参数")
             st.divider()
-            if st.button("🔄 刷新数据", use_container_width=True): st.rerun()
+            if st.button("🔄 刷新数据", use_container_width=True):
+                st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_type:
+            if filter_type and '类型' in display_df.columns:
                 display_df = display_df[display_df['类型'].isin(filter_type)]
             if search:
-                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
 
             column_cfg = {}
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更换 Key 强制刷新缓存
-            edited_df = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                height=500,
+            edited_df = data_editor_with_optional_selection(
+                display_df=display_df,
                 key="elec_editor_fix_v3",
-                column_config=column_cfg,
-                selection_mode="single-row"
+                column_cfg=column_cfg,
+                height=500
             )
-
-            if "elec_editor_fix_v3" in st.session_state:
-                show_selected_image(display_df, st.session_state["elec_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存更改到云端", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_ELEC):
@@ -261,7 +346,7 @@ def render_electronics():
         st.info("💡 提示：对于大批量BOM匹配，建议下载Excel在本地处理。")
 
 
-# ==================== 🔩 五金螺丝 (全面升级) ====================
+# ==================== 🔩 五金螺丝 ====================
 def render_screws():
     st.markdown("## 🔩 五金螺丝")
     df = load_data(SHEET_SCREW)
@@ -271,8 +356,8 @@ def render_screws():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
-    c2.metric("🔢 总数", df['数量'].sum())
-    c3.metric("⚠️ 缺货", len(df[df['数量'] < 20]), delta_color="inverse")
+    c2.metric("🔢 总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
+    c3.metric("⚠️ 缺货", len(df[df['数量'] < 20]) if '数量' in df.columns else 0, delta_color="inverse")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
@@ -285,33 +370,29 @@ def render_screws():
             filter_spec = st.multiselect("按规格筛选", df['规格'].unique() if '规格' in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入 M3 / 长度等")
             st.divider()
-            if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"): st.rerun()
+            if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"):
+                st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_type: display_df = display_df[display_df['类型'].isin(filter_type)]
-            if filter_spec: display_df = display_df[display_df['规格'].isin(filter_spec)]
+            if filter_type and '类型' in display_df.columns:
+                display_df = display_df[display_df['类型'].isin(filter_type)]
+            if filter_spec and '规格' in display_df.columns:
+                display_df = display_df[display_df['规格'].isin(filter_spec)]
             if search:
-                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
 
             column_cfg = {}
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更换 Key
-            edited_df = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                height=500,
+            edited_df = data_editor_with_optional_selection(
+                display_df=display_df,
                 key="screw_editor_fix_v3",
-                column_config=column_cfg,
-                selection_mode="single-row"
+                column_cfg=column_cfg,
+                height=500
             )
-
-            if "screw_editor_fix_v3" in st.session_state:
-                show_selected_image(display_df, st.session_state["screw_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存五金更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_SCREW):
@@ -330,17 +411,26 @@ def render_screws():
                 qty = st.number_input("数量", value=50, step=10, min_value=1)
 
                 if st.form_submit_button("确认入库"):
-                    # 全转字符串比较，防止类型报错
-                    mask = (df['规格'].astype(str) == str(spec)) & (df['长度'].astype(str) == str(length)) & (
-                                df['类型'].astype(str) == str(stype))
+                    mask = (
+                        (df['规格'].astype(str) == str(spec)) &
+                        (df['长度'].astype(str) == str(length)) &
+                        (df['类型'].astype(str) == str(stype))
+                    )
                     if mask.any():
-                        df.loc[mask, '数量'] += qty
+                        df.loc[mask, '数量'] = pd.to_numeric(df.loc[mask, '数量'], errors='coerce').fillna(0).astype(int) + int(qty)
                         st.toast(f"库存已累加: {spec}")
                     else:
-                        new_row = pd.DataFrame([{"规格": str(spec), "长度": str(length), "类型": str(stype),
-                                                 "材质": "不锈钢", "数量": qty, "备注": ""}])
+                        new_row = pd.DataFrame([{
+                            "规格": str(spec),
+                            "长度": str(length),
+                            "类型": str(stype),
+                            "材质": "不锈钢",
+                            "数量": int(qty),
+                            "备注": ""
+                        }])
                         df = pd.concat([df, new_row], ignore_index=True)
                         st.toast(f"新规格入库: {spec}")
+
                     save_data_smart(df, df, SHEET_SCREW)
                     time.sleep(1)
                     st.rerun()
@@ -348,22 +438,28 @@ def render_screws():
     with tab3:
         st.write("### ➖ 快捷领用")
         if not df.empty:
-            df['display_name'] = df['规格'].astype(str) + " " + df['长度'].astype(str) + " " + df['类型'].astype(
-                str) + " (余:" + df['数量'].astype(str) + ")"
+            df2 = df.copy()
+            df2['display_name'] = (
+                df2.get('规格', '').astype(str) + " " +
+                df2.get('长度', '').astype(str) + " " +
+                df2.get('类型', '').astype(str) +
+                " (余:" + df2.get('数量', 0).astype(str) + ")"
+            )
+
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("screw_out"):
-                    selected_item = st.selectbox("选择螺丝", df['display_name'].tolist())
+                    selected_item = st.selectbox("选择螺丝", df2['display_name'].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
 
                     if st.form_submit_button("确认出库"):
-                        idx = df[df['display_name'] == selected_item].index[0]
-                        current = df.at[idx, '数量']
+                        idx = df2[df2['display_name'] == selected_item].index[0]
+                        current = int(df.at[idx, '数量'])
                         if current < out_qty:
                             st.error(f"库存不足！当前仅剩 {current}")
                         else:
-                            df.at[idx, '数量'] -= out_qty
-                            save_data_smart(df, df.drop(columns=['display_name']), SHEET_SCREW)
+                            df.at[idx, '数量'] = current - int(out_qty)
+                            save_data_smart(df, df, SHEET_SCREW)
                             st.success("领用成功！")
                             time.sleep(1)
                             st.rerun()
@@ -371,18 +467,18 @@ def render_screws():
             st.warning("暂无库存")
 
 
-# ==================== 📟 PCB 电路板 (全面升级) ====================
+# ==================== 📟 PCB 电路板 ====================
 def render_pcb():
     st.markdown("## 📟 PCB 电路板")
     df = load_data(SHEET_PCB)
     if df.empty:
         st.info("数据加载中...")
-        if '名称' not in df.columns: return
+        return
 
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 板子型号", len(df))
-    c2.metric("🔢 库存总数", df['数量'].sum())
-    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]), delta_color="inverse")
+    c2.metric("🔢 库存总数", int(df['数量'].sum()) if '数量' in df.columns else 0)
+    c3.metric("⚠️ 低库存", len(df[df['数量'] < 5]) if '数量' in df.columns else 0, delta_color="inverse")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
@@ -394,13 +490,15 @@ def render_pcb():
             filter_loc = st.multiselect("按位置筛选", df['位置'].unique() if '位置' in df.columns else [])
             search = st.text_input("搜索 PCB...", placeholder="名称 / 版本号")
             st.divider()
-            if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"): st.rerun()
+            if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"):
+                st.rerun()
 
         with col2:
             display_df = df.copy()
-            if filter_loc: display_df = display_df[display_df['位置'].isin(filter_loc)]
+            if filter_loc and '位置' in display_df.columns:
+                display_df = display_df[display_df['位置'].isin(filter_loc)]
             if search:
-                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+                mask = display_df.astype(str).apply(lambda x: x.str.contains(search, case=False, na=False)).any(axis=1)
                 display_df = display_df[mask]
 
             column_cfg = {
@@ -410,19 +508,12 @@ def render_pcb():
             if "图片" in display_df.columns:
                 column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
 
-            # 🔥 修复点：更换 Key
-            edited_df = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                height=500,
+            edited_df = data_editor_with_optional_selection(
+                display_df=display_df,
                 key="pcb_editor_fix_v3",
-                column_config=column_cfg,
-                selection_mode="single-row"
+                column_cfg=column_cfg,
+                height=500
             )
-
-            if "pcb_editor_fix_v3" in st.session_state:
-                show_selected_image(display_df, st.session_state["pcb_editor_fix_v3"].get("selection", {}))
 
             if st.button("💾 保存PCB更改", type="primary"):
                 if save_data_smart(df, edited_df, SHEET_PCB):
@@ -441,15 +532,23 @@ def render_pcb():
                 qty = st.number_input("数量", value=5, min_value=1)
 
                 if st.form_submit_button("确认入库"):
-                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size))
+                    mask = (df['名称'].astype(str) == str(name)) & (df['尺寸'].astype(str) == str(size)) if \
+                        ('名称' in df.columns and '尺寸' in df.columns) else pd.Series([False] * len(df))
+
                     if mask.any():
-                        df.loc[mask, '数量'] += qty
+                        df.loc[mask, '数量'] = pd.to_numeric(df.loc[mask, '数量'], errors='coerce').fillna(0).astype(int) + int(qty)
                         st.toast(f"库存已累加: {name}")
                     else:
-                        new_row = pd.DataFrame(
-                            [{"名称": str(name), "尺寸": str(size), "数量": qty, "位置": str(loc), "备注": ""}])
+                        new_row = pd.DataFrame([{
+                            "名称": str(name),
+                            "尺寸": str(size),
+                            "数量": int(qty),
+                            "位置": str(loc),
+                            "备注": ""
+                        }])
                         df = pd.concat([df, new_row], ignore_index=True)
                         st.toast(f"新板入库: {name}")
+
                     save_data_smart(df, df, SHEET_PCB)
                     time.sleep(1)
                     st.rerun()
@@ -457,22 +556,26 @@ def render_pcb():
     with tab3:
         st.write("### ➖ 快捷领用")
         if not df.empty:
-            df['display_info'] = df['名称'].astype(str) + " [" + df['尺寸'].astype(str) + "] (余:" + df['数量'].astype(
-                str) + ")"
+            df2 = df.copy()
+            df2['display_info'] = (
+                df2.get('名称', '').astype(str) +
+                " [" + df2.get('尺寸', '').astype(str) + "] " +
+                "(余:" + df2.get('数量', 0).astype(str) + ")"
+            )
             col_out_1, col_out_2 = st.columns([1, 2])
             with col_out_1:
                 with st.form("pcb_out"):
-                    selected_pcb = st.selectbox("选择板子", df['display_info'].tolist())
+                    selected_pcb = st.selectbox("选择板子", df2['display_info'].tolist())
                     out_qty = st.number_input("领用数量", value=1, min_value=1)
 
                     if st.form_submit_button("确认出库"):
-                        idx = df[df['display_info'] == selected_pcb].index[0]
-                        current = df.at[idx, '数量']
+                        idx = df2[df2['display_info'] == selected_pcb].index[0]
+                        current = int(df.at[idx, '数量'])
                         if current < out_qty:
                             st.error("库存不足！")
                         else:
-                            df.at[idx, '数量'] -= out_qty
-                            save_data_smart(df, df.drop(columns=['display_info']), SHEET_PCB)
+                            df.at[idx, '数量'] = current - int(out_qty)
+                            save_data_smart(df, df, SHEET_PCB)
                             st.success("领用成功！")
                             time.sleep(1)
                             st.rerun()
