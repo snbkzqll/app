@@ -108,25 +108,24 @@ def _find_image_col(columns) -> Optional[str]:
             return col
     return None
 
-def show_image_in_placeholder(row: pd.Series, placeholder):
+def show_image_in_sidebar(row: pd.Series):
     name = row.get("名称", row.get("规格", "器件"))
     img_col = _find_image_col(row.index)
-    with placeholder.container():
-        st.markdown(f"**🖼️ 当前选中: {name}**")
-        if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
-            st.image(row[img_col], use_container_width=True)
-        else:
-            st.info("暂无有效的图片链接 (需以 http/https 开头)")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**🖼️ 当前选中: {name}**")
+    if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
+        st.sidebar.image(row[img_col], use_container_width=True)
+    else:
+        st.sidebar.info("暂无有效的图片链接 (需以 http/https 开头)")
 
 def data_editor_with_optional_selection(
     display_df: pd.DataFrame,
     key: str,
     column_cfg: dict,
-    height: int = 500,
-    image_placeholder=None
+    height: int = 500
 ) -> pd.DataFrame:
     """
-    支持 selection_mode 单行选中在占位符显示图片
+    支持 selection_mode 单行选中在侧边栏显示图片
     """
     supports = _st_data_editor_supports_selection_mode()
 
@@ -144,11 +143,10 @@ def data_editor_with_optional_selection(
         sel = st.session_state.get(key, {}).get("selection", {})
         if sel and "rows" in sel and sel["rows"]:
             pos = sel["rows"][0]
-            if image_placeholder is not None:
-                try:
-                    show_image_in_placeholder(display_df.iloc[pos], image_placeholder)
-                except Exception:
-                    pass
+            try:
+                show_image_in_sidebar(display_df.iloc[pos])
+            except Exception:
+                pass
 
         return edited_df
 
@@ -342,8 +340,6 @@ def render_electronics():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True):
                 st.rerun()
-            
-            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -370,8 +366,7 @@ def render_electronics():
                 display_df=display_df,
                 key="elec_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500,
-                image_placeholder=img_placeholder
+                height=500
             )
             st.caption("已开启自动保存")
 
@@ -427,8 +422,6 @@ def render_screws():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"):
                 st.rerun()
-                
-            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -453,8 +446,7 @@ def render_screws():
                 display_df=display_df,
                 key="screw_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500,
-                image_placeholder=img_placeholder
+                height=500
             )
             st.caption("已开启自动保存")
 
@@ -561,8 +553,6 @@ def render_pcb():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"):
                 st.rerun()
-                
-            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -589,8 +579,7 @@ def render_pcb():
                 display_df=display_df,
                 key="pcb_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500,
-                image_placeholder=img_placeholder
+                height=500
             )
             st.caption("已开启自动保存")
 
