@@ -108,47 +108,15 @@ def _find_image_col(columns) -> Optional[str]:
             return col
     return None
 
-
-def show_row_image_in_sidebar(row: pd.Series):
+@st.experimental_dialog("🖼️ 实物图预览")
+def show_image_dialog(row: pd.Series):
     name = row.get("名称", row.get("规格", "器件"))
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"### 🖼️ 当前选中: {name}")
-
+    st.markdown(f"### {name}")
     img_col = _find_image_col(row.index)
     if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
-        st.sidebar.image(row[img_col], caption=f"{name} 实物图", use_container_width=True)
+        st.image(row[img_col], use_container_width=True)
     else:
-        st.sidebar.info("暂无图片链接")
-
-
-def sidebar_row_picker(display_df: pd.DataFrame, key: str):
-    """旧版 Streamlit：用 selectbox 选行，侧边栏显示图片"""
-    if display_df.empty:
-        return None
-
-    if "名称" in display_df.columns:
-        label_col = "名称"
-    elif "规格" in display_df.columns:
-        label_col = "规格"
-    else:
-        label_col = display_df.columns[0]
-
-    options = [f"[{idx}] {str(display_df.at[idx, label_col])}" for idx in display_df.index]
-    picked = st.sidebar.selectbox("📌 选择一行查看图片（兼容模式）", options, key=f"{key}_picker")
-
-    if not picked:
-        return None
-
-    try:
-        idx = int(picked.split("]")[0].replace("[", "").strip())
-    except Exception:
-        return None
-
-    if idx in display_df.index:
-        show_row_image_in_sidebar(display_df.loc[idx])
-        return idx
-    return None
-
+        st.info("暂无有效的图片链接 (需以 http/https 开头)")
 
 def data_editor_with_optional_selection(
     display_df: pd.DataFrame,
@@ -157,8 +125,7 @@ def data_editor_with_optional_selection(
     height: int = 500
 ) -> pd.DataFrame:
     """
-    新版：支持 selection_mode 单行选中显示图片
-    旧版：不传 selection_mode，避免报错，降级为侧边栏 selectbox 选行显示图片
+    支持 selection_mode 单行选中弹出图片对话框
     """
     supports = _st_data_editor_supports_selection_mode()
 
@@ -172,15 +139,31 @@ def data_editor_with_optional_selection(
             column_config=column_cfg,
             selection_mode="single-row",
         )
+        
+        # We need a fallback check to make sure dialog doesn't infinitely pop up on reruns.
+        # By tracking the selected ID in session_state we only show it when it changes.
         sel = st.session_state.get(key, {}).get("selection", {})
         if sel and "rows" in sel and sel["rows"]:
-            pos = sel["rows"][0]  # display_df 的“位置索引”
-            try:
-                show_row_image_in_sidebar(display_df.iloc[pos])
-            except Exception:
-                pass
+            pos = sel["rows"][0]
+            # Create a unique ID for this selection based on index/key
+            current_selection_id = f"{key}_{pos}"
+            last_selection_key = f"{key}_last_dialog_shown"
+            
+            if st.session_state.get(last_selection_key) != current_selection_id:
+                st.session_state[last_selection_key] = current_selection_id
+                try:
+                    show_image_dialog(display_df.iloc[pos])
+                except Exception:
+                    pass
+        else:
+            # Clear selection if nothing is selected
+            last_selection_key = f"{key}_last_dialog_shown"
+            if last_selection_key in st.session_state:
+                del st.session_state[last_selection_key]
+
         return edited_df
 
+    # Fallback for old streamlit (just plain editor, no popups)
     edited_df = st.data_editor(
         display_df,
         use_container_width=True,
@@ -189,7 +172,6 @@ def data_editor_with_optional_selection(
         key=key,
         column_config=column_cfg,
     )
-    sidebar_row_picker(display_df, key=key)
     return edited_df
 
 
@@ -396,12 +378,11 @@ def render_electronics():
                 column_cfg=column_cfg,
                 height=500
             )
+            st.caption("已开启自动保存")
 
-            if st.button("💾 保存更改到云端", type="primary"):
+            if not edited_df.equals(display_df):
                 if save_data_smart(df, edited_df, SHEET_ELEC):
-                    st.success("✅ 保存成功！所有更改已同步。")
-                    time.sleep(1)
-                    st.rerun()
+                    st.toast("已自动保存", icon="💾")
 
     with tab2:
         up_file = st.file_uploader("上传 Excel 入库单", type=["xlsx"])
@@ -477,12 +458,11 @@ def render_screws():
                 column_cfg=column_cfg,
                 height=500
             )
+            st.caption("已开启自动保存")
 
-            if st.button("💾 保存五金更改", type="primary"):
+            if not edited_df.equals(display_df):
                 if save_data_smart(df, edited_df, SHEET_SCREW):
-                    st.success("✅ 保存成功！")
-                    time.sleep(1)
-                    st.rerun()
+                    st.toast("已自动保存", icon="💾")
 
     with tab2:
         col_a, col_b = st.columns([1, 2])
@@ -611,12 +591,11 @@ def render_pcb():
                 column_cfg=column_cfg,
                 height=500
             )
+            st.caption("已开启自动保存")
 
-            if st.button("💾 保存PCB更改", type="primary"):
+            if not edited_df.equals(display_df):
                 if save_data_smart(df, edited_df, SHEET_PCB):
-                    st.success("✅ 保存成功！")
-                    time.sleep(1)
-                    st.rerun()
+                    st.toast("已自动保存", icon="💾")
 
     with tab2:
         col_a, col_b = st.columns([1, 2])
