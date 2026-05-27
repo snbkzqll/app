@@ -362,6 +362,7 @@ def render_electronics():
             st.markdown("##### 🔍 筛选与搜索")
             filter_type = st.multiselect("按类型筛选", df["类型"].unique() if "类型" in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入型号/参数")
+            st.caption("图片链接仅支持 http/https")
             st.divider()
 
             # ✅ 排序控件（电子）
@@ -385,8 +386,9 @@ def render_electronics():
             display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {}
-            if "图片" in display_df.columns:
-                column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
+            img_col = _find_image_col(display_df.columns)
+            if img_col:
+                column_cfg[img_col] = st.column_config.ImageColumn("图片预览")
 
             edited_df = data_editor_with_optional_selection(
                 display_df=display_df,
@@ -440,6 +442,7 @@ def render_screws():
             filter_type = st.multiselect("按类型筛选", df["类型"].unique() if "类型" in df.columns else [])
             filter_spec = st.multiselect("按规格筛选", df["规格"].unique() if "规格" in df.columns else [])
             search = st.text_input("关键字搜索...", placeholder="输入 M3 / 长度等")
+            st.caption("图片链接仅支持 http/https")
             st.divider()
 
             # ✅ 排序控件（螺丝）
@@ -464,8 +467,9 @@ def render_screws():
             display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {}
-            if "图片" in display_df.columns:
-                column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
+            img_col = _find_image_col(display_df.columns)
+            if img_col:
+                column_cfg[img_col] = st.column_config.ImageColumn("图片预览")
 
             edited_df = data_editor_with_optional_selection(
                 display_df=display_df,
@@ -570,6 +574,7 @@ def render_pcb():
             st.markdown("##### 🔍 筛选与搜索")
             filter_loc = st.multiselect("按位置筛选", df["位置"].unique() if "位置" in df.columns else [])
             search = st.text_input("搜索 PCB...", placeholder="名称 / 版本号")
+            st.caption("图片链接仅支持 http/https")
             st.divider()
 
             # ✅ 排序控件（PCB）
@@ -596,8 +601,9 @@ def render_pcb():
                 "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
                 "名称": st.column_config.TextColumn("名称", required=True),
             }
-            if "图片" in display_df.columns:
-                column_cfg["图片"] = st.column_config.ImageColumn("图片预览")
+            img_col = _find_image_col(display_df.columns)
+            if img_col:
+                column_cfg[img_col] = st.column_config.ImageColumn("图片预览")
 
             edited_df = data_editor_with_optional_selection(
                 display_df=display_df,
