@@ -108,24 +108,25 @@ def _find_image_col(columns) -> Optional[str]:
             return col
     return None
 
-@st.dialog("🖼️ 实物图预览")
-def show_image_dialog(row: pd.Series):
+def show_image_in_placeholder(row: pd.Series, placeholder):
     name = row.get("名称", row.get("规格", "器件"))
-    st.markdown(f"### {name}")
     img_col = _find_image_col(row.index)
-    if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
-        st.image(row[img_col], use_container_width=True)
-    else:
-        st.info("暂无有效的图片链接 (需以 http/https 开头)")
+    with placeholder.container():
+        st.markdown(f"**🖼️ 当前选中: {name}**")
+        if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
+            st.image(row[img_col], use_container_width=True)
+        else:
+            st.info("暂无有效的图片链接 (需以 http/https 开头)")
 
 def data_editor_with_optional_selection(
     display_df: pd.DataFrame,
     key: str,
     column_cfg: dict,
-    height: int = 500
+    height: int = 500,
+    image_placeholder=None
 ) -> pd.DataFrame:
     """
-    支持 selection_mode 单行选中弹出图片对话框
+    支持 selection_mode 单行选中在占位符显示图片
     """
     supports = _st_data_editor_supports_selection_mode()
 
@@ -140,26 +141,14 @@ def data_editor_with_optional_selection(
             selection_mode="single-row",
         )
         
-        # We need a fallback check to make sure dialog doesn't infinitely pop up on reruns.
-        # By tracking the selected ID in session_state we only show it when it changes.
         sel = st.session_state.get(key, {}).get("selection", {})
         if sel and "rows" in sel and sel["rows"]:
             pos = sel["rows"][0]
-            # Create a unique ID for this selection based on index/key
-            current_selection_id = f"{key}_{pos}"
-            last_selection_key = f"{key}_last_dialog_shown"
-            
-            if st.session_state.get(last_selection_key) != current_selection_id:
-                st.session_state[last_selection_key] = current_selection_id
+            if image_placeholder is not None:
                 try:
-                    show_image_dialog(display_df.iloc[pos])
+                    show_image_in_placeholder(display_df.iloc[pos], image_placeholder)
                 except Exception:
                     pass
-        else:
-            # Clear selection if nothing is selected
-            last_selection_key = f"{key}_last_dialog_shown"
-            if last_selection_key in st.session_state:
-                del st.session_state[last_selection_key]
 
         return edited_df
 
@@ -353,6 +342,8 @@ def render_electronics():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True):
                 st.rerun()
+            
+            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -379,7 +370,8 @@ def render_electronics():
                 display_df=display_df,
                 key="elec_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500
+                height=500,
+                image_placeholder=img_placeholder
             )
             st.caption("已开启自动保存")
 
@@ -435,6 +427,8 @@ def render_screws():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"):
                 st.rerun()
+                
+            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -459,7 +453,8 @@ def render_screws():
                 display_df=display_df,
                 key="screw_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500
+                height=500,
+                image_placeholder=img_placeholder
             )
             st.caption("已开启自动保存")
 
@@ -566,6 +561,8 @@ def render_pcb():
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"):
                 st.rerun()
+                
+            img_placeholder = st.empty()
 
         with col2:
             display_df = df.copy()
@@ -592,7 +589,8 @@ def render_pcb():
                 display_df=display_df,
                 key="pcb_editor_fix_v3",
                 column_cfg=column_cfg,
-                height=500
+                height=500,
+                image_placeholder=img_placeholder
             )
             st.caption("已开启自动保存")
 
