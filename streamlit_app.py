@@ -108,7 +108,7 @@ def _find_image_col(columns) -> Optional[str]:
             return col
     return None
 
-@st.experimental_dialog("🖼️ 实物图预览")
+@st.dialog("🖼️ 实物图预览")
 def show_image_dialog(row: pd.Series):
     name = row.get("名称", row.get("规格", "器件"))
     st.markdown(f"### {name}")
