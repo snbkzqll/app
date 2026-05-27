@@ -368,6 +368,9 @@ def render_electronics():
             display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
 
             column_cfg = {}
+            if "备注" in display_df.columns:
+                column_cfg["备注"] = None
+                
             img_col = _find_image_col(display_df.columns)
             if img_col:
                 column_cfg[img_col] = st.column_config.ImageColumn("图片预览")
