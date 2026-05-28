@@ -113,8 +113,12 @@ def show_image_in_sidebar(row: pd.Series):
     img_col = _find_image_col(row.index)
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**🖼️ 当前选中: {name}**")
-    if img_col and row.get(img_col, "") and str(row[img_col]).startswith("http"):
-        st.sidebar.image(row[img_col], use_container_width=True)
+    
+    # 清理链接前后的空格和回车
+    img_url = str(row.get(img_col, "")).strip() if img_col else ""
+    
+    if img_url and img_url.startswith("http"):
+        st.sidebar.image(img_url, use_container_width=True)
     else:
         st.sidebar.info("暂无有效的图片链接 (需以 http/https 开头)")
 
@@ -174,6 +178,10 @@ def load_data(sheet_name: str) -> pd.DataFrame:
 
         if "数量" in df.columns:
             df["数量"] = pd.to_numeric(df["数量"], errors="coerce").fillna(0).astype(int)
+
+        # 确保存在图片链接列
+        if not _find_image_col(df.columns):
+            df["图片链接"] = ""
 
         return df
     except Exception as e:
@@ -480,6 +488,7 @@ def render_screws():
                             "类型": str(stype),
                             "材质": "不锈钢",
                             "数量": int(qty),
+                            "图片链接": "",
                             "备注": ""
                         }])
                         df = pd.concat([df, new_row], ignore_index=True)
@@ -612,6 +621,7 @@ def render_pcb():
                             "尺寸": str(size),
                             "数量": int(qty),
                             "位置": str(loc),
+                            "图片链接": "",
                             "备注": ""
                         }])
                         df = pd.concat([df, new_row], ignore_index=True)
