@@ -175,6 +175,10 @@ def load_data(sheet_name: str) -> pd.DataFrame:
         if "数量" in df.columns:
             df["数量"] = pd.to_numeric(df["数量"], errors="coerce").fillna(0).astype(int)
 
+        # 确保存在图片链接列
+        if not _find_image_col(df.columns):
+            df["图片链接"] = ""
+
         return df
     except Exception as e:
         st.error(f"数据读取错误: {e}")
@@ -480,6 +484,7 @@ def render_screws():
                             "类型": str(stype),
                             "材质": "不锈钢",
                             "数量": int(qty),
+                            "图片链接": "",
                             "备注": ""
                         }])
                         df = pd.concat([df, new_row], ignore_index=True)
@@ -612,6 +617,7 @@ def render_pcb():
                             "尺寸": str(size),
                             "数量": int(qty),
                             "位置": str(loc),
+                            "图片链接": "",
                             "备注": ""
                         }])
                         df = pd.concat([df, new_row], ignore_index=True)
