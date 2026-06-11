@@ -108,6 +108,16 @@ def _find_image_col(columns) -> Optional[str]:
             return col
     return None
 
+
+def _ensure_column_at_end(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    """确保指定列存在，并固定显示在最后一列。"""
+    if column_name not in df.columns:
+        df[column_name] = ""
+
+    ordered_cols = [col for col in df.columns if col != column_name] + [column_name]
+    return df.loc[:, ordered_cols]
+
+
 def show_image_in_sidebar(row: pd.Series):
     name = row.get("名称", row.get("规格", "器件"))
     img_col = _find_image_col(row.index)
@@ -182,6 +192,10 @@ def load_data(sheet_name: str) -> pd.DataFrame:
         # 确保存在图片链接列
         if not _find_image_col(df.columns):
             df["图片链接"] = ""
+
+        # 电子元器件表增加立创编号，并放在最后一列，便于录入 LCSC 编号。
+        if sheet_name == SHEET_ELEC:
+            df = _ensure_column_at_end(df, "立创编号")
 
         return df
     except Exception as e:
