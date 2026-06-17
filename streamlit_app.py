@@ -178,6 +178,59 @@ def data_editor_with_optional_selection(
 
 
 # ==================== 🔧 核心函数 ====================
+import re
+
+def parse_mfr_parameter(mfr: str, category: str) -> str:
+    """如果从第三方API获取不到参数(如阻值/精度)，尝试通过原厂型号(MFR)去解析"""
+    mfr = str(mfr).upper()
+    # 移除常见的封装前缀干扰
+    for pkg in ["0201", "0402", "0603", "0805", "1206", "1210", "2010", "2512"]:
+        if pkg in mfr:
+            mfr = mfr.replace(pkg, "-", 1)
+
+    if "RESISTOR" in category.upper():
+        tol = ""
+        if "F" in mfr: tol = "±1%"
+        elif "J" in mfr: tol = "±5%"
+        elif "D" in mfr: tol = "±0.5%"
+        elif "B" in mfr: tol = "±0.1%"
+        
+        # 匹配 4992 (49.9k), 103 (10k), 4R7 (4.7) 格式
+        match = re.search(r'(?<![0-9])([0-9]{1,3}R[0-9]{1,2}|[0-9]{3,4})(?![0-9])', mfr)
+        if match:
+            code = match.group(1)
+            try:
+                if 'R' in code:
+                    ohms = float(code.replace('R', '.'))
+                else:
+                    if len(code) == 3:
+                        ohms = float(code[:2]) * (10 ** int(code[2]))
+                    else:
+                        ohms = float(code[:3]) * (10 ** int(code[3]))
+                    
+                res_val = f"{ohms/1000000:g}MΩ" if ohms >= 1000000 else f"{ohms/1000:g}kΩ" if ohms >= 1000 else f"{ohms:g}Ω"
+                return f"{res_val} {tol}".strip()
+            except: pass
+            
+    elif "CAPACITOR" in category.upper():
+        # 匹配 104 (100nF)
+        match = re.search(r'(?<![0-9])([0-9]{3})(?![0-9])', mfr)
+        if match:
+            code = match.group(1)
+            try:
+                pf = float(code[:2]) * (10 ** int(code[2]))
+                cap_val = f"{pf/1000000:g}μF" if pf >= 1000000 else f"{pf/1000:g}nF" if pf >= 1000 else f"{pf:g}pF"
+                
+                tol = ""
+                if "K" in mfr: tol = "±10%"
+                elif "M" in mfr: tol = "±20%"
+                elif "J" in mfr: tol = "±5%"
+                elif "Z" in mfr: tol = "+80/-20%"
+                return f"{cap_val} {tol}".strip()
+            except: pass
+            
+    return ""
+
 def fetch_lcsc_data(code: str) -> dict:
     """尝试抓取立创商城的器件参数。使用开源的 jlcsearch.tscircuit API。"""
     code = str(code).strip().upper()
@@ -194,23 +247,28 @@ def fetch_lcsc_data(code: str) -> dict:
             data = res.json()
             if data.get("components"):
                 # 如果搜到了多个，找 lcsc 编号完全匹配的
+                target_item = None
                 for item in data["components"]:
                     if str(item.get("lcsc")) == raw_num or f"C{item.get('lcsc')}" == code:
-                        return {
-                            "名称": item.get("mfr", ""),
-                            "规格": item.get("package", ""),
-                            "参数": item.get("description", ""),
-                            "类型": item.get("category", ""),
-                            "图片链接": "", # 该API暂不提供图片
-                        }
-                # 如果没有精确匹配的，默认取第一个
-                item = data["components"][0]
+                        target_item = item
+                        break
+                if not target_item:
+                    target_item = data["components"][0]
+                
+                mfr = target_item.get("mfr", "")
+                cat = target_item.get("category", "")
+                desc = target_item.get("description", "")
+                
+                # 若API未返回描述，从MFR解析阻值/容值
+                if not desc:
+                    desc = parse_mfr_parameter(mfr, cat)
+                
                 return {
-                    "名称": item.get("mfr", ""),
-                    "规格": item.get("package", ""),
-                    "参数": item.get("description", ""),
-                    "类型": item.get("category", ""),
-                    "图片链接": "",
+                    "名称": mfr,
+                    "规格": target_item.get("package", ""),
+                    "参数": desc,
+                    "类型": cat,
+                    "图片链接": "", # 该API暂不提供图片
                 }
     except Exception as e:
         print(f"fetch_lcsc_data error: {e}")
