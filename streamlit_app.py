@@ -5,6 +5,7 @@ import re
 import time
 import inspect
 from typing import Optional, Tuple, List
+import requests
 
 # ==================== 🔐 账号密码配置 ====================
 USERS = {
@@ -177,6 +178,37 @@ def data_editor_with_optional_selection(
 
 
 # ==================== 🔧 核心函数 ====================
+def fetch_lcsc_data(code: str) -> dict:
+    """尝试抓取立创商城/立创EDA的器件参数。由于存在反爬机制，可能返回空。"""
+    code = str(code).strip().upper()
+    if not code:
+        return {}
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+    
+    try:
+        url = "https://pro.lceda.cn/api/components/search"
+        payload = {"keyword": code, "page": 1, "pageSize": 10}
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("success") and data.get("result", {}).get("lists"):
+                item = data["result"]["lists"][0]
+                return {
+                    "名称": item.get("title", ""),
+                    "规格": item.get("packageDetail", ""),
+                    "参数": item.get("description", ""),
+                    "类型": item.get("catalogName", ""),
+                    "图片链接": item.get("imageUrl", "") or item.get("dataStr", ""),
+                }
+    except Exception:
+        pass
+        
+    return {}
+
 def load_data(sheet_name: str) -> pd.DataFrame:
     """读取 + 强制类型清洗：全字符串，数量列转 int"""
     try:
@@ -441,15 +473,72 @@ def render_electronics():
                     st.toast("已自动保存", icon="💾")
 
     with tab2:
-        up_file = st.file_uploader("上传 Excel 入库单", type=["xlsx"])
-        if up_file:
-            new_data = pd.read_excel(up_file)
-            st.dataframe(new_data.head())
-            if st.button("🚀 确认合并入库"):
-                final_df = pd.concat([df, new_data], ignore_index=True)
-                save_data_smart(final_df, final_df, SHEET_ELEC)
-                st.success("入库成功！")
-                st.rerun()
+        col_excel, col_lcsc = st.columns([1, 1])
+        
+        with col_excel:
+            st.markdown("##### 📥 Excel 批量入库")
+            up_file = st.file_uploader("上传 Excel 入库单", type=["xlsx"])
+            if up_file:
+                new_data = pd.read_excel(up_file)
+                st.dataframe(new_data.head())
+                if st.button("🚀 确认合并入库"):
+                    final_df = pd.concat([df, new_data], ignore_index=True)
+                    save_data_smart(final_df, final_df, SHEET_ELEC)
+                    st.success("入库成功！")
+                    st.rerun()
+
+        with col_lcsc:
+            st.markdown("##### 🚀 立创编号快速入库")
+            with st.form("lcsc_add_form"):
+                lcsc_code = st.text_input("立创编号 (例如 C12345)", placeholder="C12345")
+                add_qty = st.number_input("入库数量", value=50, min_value=1, step=10)
+                submit_lcsc = st.form_submit_button("获取并入库", use_container_width=True)
+                
+                if submit_lcsc:
+                    if not lcsc_code.strip():
+                        st.warning("请输入有效的立创编号")
+                    else:
+                        code = lcsc_code.strip().upper()
+                        if "立创编号" not in df.columns:
+                            df["立创编号"] = ""
+                            
+                        mask = df["立创编号"].astype(str).str.upper() == code
+                        
+                        if mask.any():
+                            df.loc[mask, "数量"] = pd.to_numeric(df.loc[mask, "数量"], errors="coerce").fillna(0).astype(int) + int(add_qty)
+                            save_data_smart(df, df, SHEET_ELEC)
+                            st.success(f"📦 库存已累加: {code} (+{add_qty})")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.info(f"正在从立创商城获取 {code} 的参数...")
+                            info = fetch_lcsc_data(code)
+                            
+                            new_row = {
+                                "立创编号": code,
+                                "名称": info.get("名称", code) if info.get("名称") else code,
+                                "规格": info.get("规格", ""),
+                                "参数": info.get("参数", ""),
+                                "类型": info.get("类型", "未分类"),
+                                "图片链接": info.get("图片链接", ""),
+                                "数量": int(add_qty),
+                                "备注": ""
+                            }
+                            
+                            new_row_df = pd.DataFrame([new_row])
+                            for c in df.columns:
+                                if c not in new_row_df.columns:
+                                    new_row_df[c] = ""
+                                    
+                            df = pd.concat([df, new_row_df], ignore_index=True)
+                            save_data_smart(df, df, SHEET_ELEC)
+                            
+                            if info:
+                                st.success(f"✨ 成功获取并入库: {code} ({info.get('名称', '')})")
+                            else:
+                                st.warning(f"⚠️ 获取参数失败，已创建新记录，请在表格中手动完善参数。")
+                            time.sleep(1.5)
+                            st.rerun()
 
     with tab3:
         st.info("💡 提示：对于大批量BOM匹配，建议下载Excel在本地处理。")
