@@ -179,32 +179,41 @@ def data_editor_with_optional_selection(
 
 # ==================== 🔧 核心函数 ====================
 def fetch_lcsc_data(code: str) -> dict:
-    """尝试抓取立创商城/立创EDA的器件参数。由于存在反爬机制，可能返回空。"""
+    """尝试抓取立创商城的器件参数。使用开源的 jlcsearch.tscircuit API。"""
     code = str(code).strip().upper()
     if not code:
         return {}
     
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-    }
+    # 清理掉 C 前缀以便只留纯数字进行备用查询（如果需要）
+    raw_num = code.replace("C", "").strip()
     
     try:
-        url = "https://pro.lceda.cn/api/components/search"
-        payload = {"keyword": code, "page": 1, "pageSize": 10}
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        url = f"https://jlcsearch.tscircuit.com/components/list.json?search={code}"
+        res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            if data.get("success") and data.get("result", {}).get("lists"):
-                item = data["result"]["lists"][0]
+            if data.get("components"):
+                # 如果搜到了多个，找 lcsc 编号完全匹配的
+                for item in data["components"]:
+                    if str(item.get("lcsc")) == raw_num or f"C{item.get('lcsc')}" == code:
+                        return {
+                            "名称": item.get("mfr", ""),
+                            "规格": item.get("package", ""),
+                            "参数": item.get("description", ""),
+                            "类型": item.get("category", ""),
+                            "图片链接": "", # 该API暂不提供图片
+                        }
+                # 如果没有精确匹配的，默认取第一个
+                item = data["components"][0]
                 return {
-                    "名称": item.get("title", ""),
-                    "规格": item.get("packageDetail", ""),
+                    "名称": item.get("mfr", ""),
+                    "规格": item.get("package", ""),
                     "参数": item.get("description", ""),
-                    "类型": item.get("catalogName", ""),
-                    "图片链接": item.get("imageUrl", "") or item.get("dataStr", ""),
+                    "类型": item.get("category", ""),
+                    "图片链接": "",
                 }
-    except Exception:
+    except Exception as e:
+        print(f"fetch_lcsc_data error: {e}")
         pass
         
     return {}
