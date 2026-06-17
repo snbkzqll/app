@@ -256,6 +256,14 @@ def get_sort_value(text) -> float:
     return val * multipliers.get(unit, 1.0)
 
 
+DEFAULT_SMART_SORT_COLUMNS = {"参数"}
+
+
+def _should_use_smart_sort(column_name: str, smart_on: bool) -> bool:
+    """参数列默认按单位数值排序；勾选智能排序后，主/次排序列都启用。"""
+    return smart_on or column_name in DEFAULT_SMART_SORT_COLUMNS
+
+
 def apply_sort(display_df: pd.DataFrame, sort_cols: List[str], ascending: List[bool]) -> pd.DataFrame:
     """稳定排序（保留原 index，便于保存回写）"""
     sort_cols = [c for c in sort_cols if c and c in display_df.columns]
@@ -264,14 +272,13 @@ def apply_sort(display_df: pd.DataFrame, sort_cols: List[str], ascending: List[b
     return display_df.sort_values(by=sort_cols, ascending=ascending[:len(sort_cols)], kind="mergesort")
 
 
-def sort_controls(prefix: str, df_columns: List[str]) -> Tuple[str, str, str, bool, Optional[str]]:
+def sort_controls(prefix: str, df_columns: List[str]) -> Tuple[str, str, str, bool]:
     """
     返回：
     - 主排序列
     - 次排序列
     - 主排序顺序（升序/降序）
-    - 是否启用智能排序
-    - 智能排序目标列（默认跟随主排序列）
+    - 是否启用智能排序（参数列默认启用；勾选后主/次排序列都启用）
     """
     # 过滤掉图片列（一般没必要排序）
     cols = [c for c in df_columns if c not in ["图片", "图片链接", "Image", "img"]]
@@ -285,12 +292,7 @@ def sort_controls(prefix: str, df_columns: List[str]) -> Tuple[str, str, str, bo
 
     smart_on = st.checkbox("智能排序（识别 10R/4.7K/1u 等）", value=False, key=f"{prefix}_smart_sort")
 
-    # 智能排序默认作用于主排序列
-    smart_target = None
-    if smart_on and primary and primary != "(不排序)":
-        smart_target = primary
-
-    return primary, secondary, order, smart_on, smart_target
+    return primary, secondary, order, smart_on
 
 
 def apply_sort_with_optional_smart(
@@ -298,8 +300,7 @@ def apply_sort_with_optional_smart(
     primary: str,
     secondary: str,
     order: str,
-    smart_on: bool,
-    smart_target: Optional[str]
+    smart_on: bool
 ) -> pd.DataFrame:
     """把排序应用到 display_df（可选智能排序）"""
     sort_cols = []
@@ -316,14 +317,22 @@ def apply_sort_with_optional_smart(
     if not sort_cols:
         return display_df
 
-    if smart_on and smart_target and smart_target in display_df.columns:
-        tmp_col = "__smart_sort_key__"
-        # 只对智能列生成 key；其他列照常
-        display_df[tmp_col] = display_df[smart_target].map(get_sort_value)
+    smart_cols = [col for col in sort_cols if _should_use_smart_sort(col, smart_on)]
+    if smart_cols:
+        display_df = display_df.copy()
+        tmp_cols = []
+        real_sort_cols = []
 
-        # 替换 sort_cols 里的目标列为 tmp_col
-        real_sort_cols = [tmp_col if c == smart_target else c for c in sort_cols]
-        out = apply_sort(display_df, real_sort_cols, ascending).drop(columns=[tmp_col])
+        for col in sort_cols:
+            if col in smart_cols:
+                tmp_col = f"__smart_sort_key__{len(tmp_cols)}"
+                display_df[tmp_col] = display_df[col].map(get_sort_value)
+                tmp_cols.append(tmp_col)
+                real_sort_cols.append(tmp_col)
+            else:
+                real_sort_cols.append(col)
+
+        out = apply_sort(display_df, real_sort_cols, ascending).drop(columns=tmp_cols)
         return out
 
     return apply_sort(display_df, sort_cols, ascending)
@@ -357,7 +366,7 @@ def render_electronics():
             st.divider()
 
             # ✅ 排序控件（电子）
-            primary, secondary, order, smart_on, smart_target = sort_controls("elec", df.columns.tolist())
+            primary, secondary, order, smart_on = sort_controls("elec", df.columns.tolist())
 
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True):
@@ -374,7 +383,7 @@ def render_electronics():
                 display_df = display_df[mask]
 
             # ✅ 应用排序（保留 index）
-            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on)
 
             column_cfg = {}
             if "备注" in display_df.columns:
@@ -439,7 +448,7 @@ def render_screws():
             st.divider()
 
             # ✅ 排序控件（螺丝）
-            primary, secondary, order, smart_on, smart_target = sort_controls("screw", df.columns.tolist())
+            primary, secondary, order, smart_on = sort_controls("screw", df.columns.tolist())
 
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_screw"):
@@ -457,7 +466,7 @@ def render_screws():
                 display_df = display_df[mask]
 
             # ✅ 应用排序
-            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on)
 
             column_cfg = {}
             img_col = _find_image_col(display_df.columns)
@@ -571,7 +580,7 @@ def render_pcb():
             st.divider()
 
             # ✅ 排序控件（PCB）
-            primary, secondary, order, smart_on, smart_target = sort_controls("pcb", df.columns.tolist())
+            primary, secondary, order, smart_on = sort_controls("pcb", df.columns.tolist())
 
             st.divider()
             if st.button("🔄 刷新数据", use_container_width=True, key="refresh_pcb"):
@@ -588,7 +597,7 @@ def render_pcb():
                 display_df = display_df[mask]
 
             # ✅ 应用排序
-            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on, smart_target)
+            display_df = apply_sort_with_optional_smart(display_df, primary, secondary, order, smart_on)
 
             column_cfg = {
                 "数量": st.column_config.NumberColumn("数量", min_value=0, step=1),
