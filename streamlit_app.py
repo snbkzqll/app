@@ -220,6 +220,36 @@ def save_data_smart(original_df: pd.DataFrame, edited_subset_df: pd.DataFrame, s
         return False
 
 
+def filter_low_stock(df: pd.DataFrame, threshold: int) -> pd.DataFrame:
+    """按数量阈值筛出低库存条目，并保留原始 index 便于回写。"""
+    if "数量" not in df.columns:
+        return df.iloc[0:0]
+
+    qty = pd.to_numeric(df["数量"], errors="coerce").fillna(0)
+    return df[qty < threshold]
+
+
+def low_stock_toggle(prefix: str, count: int, threshold: int, label: str = "缺货") -> bool:
+    """渲染低库存筛选按钮，返回当前是否只看低库存。"""
+    state_key = f"{prefix}_low_stock_only"
+    active = bool(st.session_state.get(state_key, False))
+    button_label = "显示全部" if active else f"只看{label}"
+
+    if st.button(
+        button_label,
+        key=f"{prefix}_low_stock_toggle",
+        use_container_width=True,
+        disabled=(count == 0 and not active),
+    ):
+        st.session_state[state_key] = not active
+        st.rerun()
+
+    if active:
+        st.caption(f"当前仅显示数量 < {threshold} 的条目")
+
+    return bool(st.session_state.get(state_key, False))
+
+
 def get_sort_value(text) -> float:
     """
     从字符串里提取数值+单位做智能排序（适合：10R、4.7K、1u、100n、2.2m 等）
@@ -349,8 +379,10 @@ def render_electronics():
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
     c2.metric("🔢 总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
-    low_stock = df[df["数量"] < 10] if "数量" in df.columns else df.iloc[0:0]
-    c3.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
+    low_stock = filter_low_stock(df, 10)
+    with c3:
+        st.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
+        low_stock_only = low_stock_toggle("elec", len(low_stock), 10)
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 批量入库", "📤 BOM出库"])
@@ -374,6 +406,9 @@ def render_electronics():
 
         with col2:
             display_df = df.copy()
+
+            if low_stock_only:
+                display_df = filter_low_stock(display_df, 10)
 
             if filter_type and "类型" in display_df.columns:
                 display_df = display_df[display_df["类型"].isin(filter_type)]
@@ -431,7 +466,10 @@ def render_screws():
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 种类", len(df))
     c2.metric("🔢 总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
-    c3.metric("⚠️ 缺货", len(df[df["数量"] < 20]) if "数量" in df.columns else 0, delta_color="inverse")
+    low_stock = filter_low_stock(df, 20)
+    with c3:
+        st.metric("⚠️ 缺货", len(low_stock), delta_color="inverse")
+        low_stock_only = low_stock_toggle("screw", len(low_stock), 20)
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
@@ -456,6 +494,9 @@ def render_screws():
 
         with col2:
             display_df = df.copy()
+
+            if low_stock_only:
+                display_df = filter_low_stock(display_df, 20)
 
             if filter_type and "类型" in display_df.columns:
                 display_df = display_df[display_df["类型"].isin(filter_type)]
@@ -564,7 +605,10 @@ def render_pcb():
     c1, c2, c3 = st.columns(3)
     c1.metric("📦 板子型号", len(df))
     c2.metric("🔢 库存总数", int(df["数量"].sum()) if "数量" in df.columns else 0)
-    c3.metric("⚠️ 低库存", len(df[df["数量"] < 5]) if "数量" in df.columns else 0, delta_color="inverse")
+    low_stock = filter_low_stock(df, 5)
+    with c3:
+        st.metric("⚠️ 低库存", len(low_stock), delta_color="inverse")
+        low_stock_only = low_stock_toggle("pcb", len(low_stock), 5, label="低库存")
 
     st.markdown("---")
     tab1, tab2, tab3 = st.tabs(["📊 总览与管理", "📥 快速入库", "📤 快捷领用"])
@@ -588,6 +632,9 @@ def render_pcb():
 
         with col2:
             display_df = df.copy()
+
+            if low_stock_only:
+                display_df = filter_low_stock(display_df, 5)
 
             if filter_loc and "位置" in display_df.columns:
                 display_df = display_df[display_df["位置"].isin(filter_loc)]
